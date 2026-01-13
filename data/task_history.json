@@ -1,0 +1,46 @@
+{
+  "open safari, search for python tutorials, and open the first result": [
+    "Open Safari via Spotlight",
+    "Type 'Python tutorials' in the search bar and press Enter",
+    "Click the first search result"
+  ],
+  "open safari and search for weather": {
+    "batches": [
+      {
+        "type": "blind",
+        "description": "Open Safari and search for weather",
+        "actions": [
+          "hotkey:command,space",
+          "type:Safari",
+          "key:enter",
+          "wait:1.0",
+          "hotkey:command,l",
+          "type:weather",
+          "key:enter"
+        ]
+      }
+    ]
+  },
+  "play most popular video of daniel dalen": {
+    "batches": [
+      {
+        "type": "blind",
+        "description": "Open Safari and search for Daniel Dalen's most popular video",
+        "actions": [
+          "hotkey:command,space",
+          "type:Safari",
+          "key:enter",
+          "wait:1.0",
+          "hotkey:command,l",
+          "type:daniel dalen most popular video youtube",
+          "key:enter"
+        ]
+      },
+      {
+        "type": "vision",
+        "description": "Click the first video result",
+        "action": "click the first video result to play it"
+      }
+    ]
+  }
+}
