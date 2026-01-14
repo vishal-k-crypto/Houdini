@@ -15,19 +15,46 @@ try:
 except ImportError:
     PYAUTOGUI_AVAILABLE = False
 
+# Try to import enhanced executor
+try:
+    from .enhanced_executor import EnhancedExecutor, execute_enhanced_batch, ENHANCED_AVAILABLE
+except ImportError:
+    ENHANCED_AVAILABLE = False
+    logger.info("Enhanced executor not available, using basic PyAutoGUI")
 
-def execute_blind_batch(actions: List[str], task: str = None) -> dict:
+
+def execute_blind_batch(actions: List[str], task: str = None, use_enhanced: bool = True) -> dict:
     """
     Execute a batch of blind actions directly.
+    
+    Args:
+        actions: List of action strings
+        task: Optional task description
+        use_enhanced: Try to use enhanced executor (10-100x faster) if available
     
     Action format:
     - "hotkey:key1,key2" → pyautogui.hotkey(key1, key2)
     - "type:text" → pyautogui.write(text)
     - "key:keyname" → pyautogui.press(keyname)
     - "wait:seconds" → time.sleep(seconds)
+    - "click:element_name" → Find and click element (enhanced only)
+    - "type:field:text" → Find field and type (enhanced only)
     
     Returns: {"success": True/False, "error": "..."}
     """
+    # Try enhanced executor first (much faster!)
+    if use_enhanced and ENHANCED_AVAILABLE:
+        logger.debug("Using enhanced executor (native accessibility + human cursor)")
+        result = execute_enhanced_batch(actions, task, use_human_cursor=True)
+        
+        # If enhanced succeeded, return immediately
+        if result["success"]:
+            return {"success": True, "error": None, "method": "enhanced"}
+        else:
+            logger.warning(f"Enhanced executor failed: {result.get('error')}, falling back to basic")
+    
+    # Fallback to basic PyAutoGUI executor
+    logger.debug("Using basic PyAutoGUI executor")
     if not PYAUTOGUI_AVAILABLE:
         error_msg = "pyautogui not available"
         if task:
@@ -50,6 +77,20 @@ def execute_blind_batch(actions: List[str], task: str = None) -> dict:
             if action.startswith("hotkey:"):
                 keys = action[7:].split(",")
                 keys = [k.strip() for k in keys]
+                
+                # Support macOS key name variations and aliases
+                key_mapping = {
+                    'cmd': 'command',
+                    'opt': 'option',
+                    'alt': 'option',
+                    'ctrl': 'control',
+                    'del': 'delete',
+                    'ret': 'return',
+                    'esc': 'escape',
+                    'grave': '`',  # For Cmd+` window switching
+                }
+                
+                keys = [key_mapping.get(k.lower(), k) for k in keys]
                 pyautogui.hotkey(*keys)
                 logger.info(f"  ↳ hotkey({', '.join(keys)})")
                 

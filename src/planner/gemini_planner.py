@@ -5,6 +5,10 @@ from ..utils.gemini_client import GeminiCLI
 from ..utils.logging import logger
 from ..utils.prompt_loader import get_planner_prompt
 from ..utils.prompt_evolution import prompt_evolution
+from ..utils.pattern_store import pattern_store, PatternStore
+from ..utils.choice_tracker import choice_tracker
+from ..utils.action_optimizer import action_optimizer, ActionOptimizer
+from ..ui.thinking_window import show_planner_thinking, show_thinking
 
 TASK_HISTORY_FILE = Path(__file__).parent.parent.parent / "data" / "task_history.json"
 
@@ -34,10 +38,23 @@ PLANNING_RULES = """
 - Cmd+L (focus URL/search bar)
 - Type and Enter (search with default engine - Google)
 
+### YOUTUBE NAVIGATION:
+- Navigate to channel page: youtube.com/@{channel_name}/videos
+- First video in grid is the latest/most recent upload
+- Use direct URL navigation when possible to avoid vision actions
+
+### VISION ACTION DESCRIPTIONS:
+When vision actions are needed, be SPECIFIC:
+- GOOD: "click the first video thumbnail in the main grid"
+- BAD: "click the video"
+- GOOD: "click the first search result link"
+- BAD: "click result"
+
 ### TASK PATTERNS:
 - "search X" → blind: [Cmd+Space, "Safari", Enter, Cmd+L, type "X", Enter]
 - "open X and search Y" → blind: [Cmd+Space, "Safari", Enter, Cmd+L, "Y", Enter]
-- "click first result" → vision: need to see screen for coordinates
+- "open latest video from {creator}" → blind: [Cmd+Space, Safari, Enter, Cmd+L, youtube.com/@{creator}/videos, Enter] + vision: click first video thumbnail
+- "click first result" → vision: click first search result in main content area
 """
 
 
@@ -79,10 +96,13 @@ class TaskMemory:
 class GeminiPlanner:
     """
     Smart Planner - generates batched blind vs vision actions.
+    Now enhanced with pattern learning for efficiency.
     """
     def __init__(self, cli: GeminiCLI):
         self.cli = cli
         self.memory = TaskMemory()
+        self.pattern_store = pattern_store
+        self.action_optimizer = action_optimizer
 
     def plan(self, task: str) -> List[Dict]:
         """
@@ -90,11 +110,35 @@ class GeminiPlanner:
         [{"type": "blind", "actions": [...], "description": "..."},
          {"type": "vision", "action": "...", "description": "..."}]
         """
-        # Check cache
+        # 1. Check for high-confidence learned patterns first
+        similar_patterns = self.pattern_store.find_similar(task, threshold=0.7)
+        if similar_patterns:
+            best_pattern = self.pattern_store.get_best_pattern(similar_patterns)
+            if best_pattern and best_pattern.confidence >= 0.85:
+                logger.info(f"🧠 Using learned pattern (confidence: {best_pattern.confidence:.0%})")
+                try:
+                    show_planner_thinking(f"Using learned pattern (confidence: {best_pattern.confidence:.0%})")
+                except:
+                    pass
+                batches = self._pattern_to_batches(best_pattern, task)
+                return batches
+        
+        # 2. Check exact cache
         cached = self.memory.find_similar(task)
         if cached:
             logger.info("⚡ Using cached plan")
+            try:
+                show_planner_thinking("Using cached plan from memory")
+            except:
+                pass
             return cached.get("batches", [{"type": "blind", "actions": [task]}])
+        
+        # 3. Generate pattern hints for the LLM
+        try:
+            show_planner_thinking("Generating new plan with LLM...")
+        except:
+            pass
+        pattern_hints = self._get_pattern_hints(similar_patterns)
         
         # Load evolved system prompt
         system_prompt = get_planner_prompt()
@@ -102,7 +146,7 @@ class GeminiPlanner:
         prompt = f"""{system_prompt}
 
 ## Task: {task}
-
+{pattern_hints}
 ## Output Format
 Generate a plan with batched actions. Output JSON:
 {{
@@ -131,7 +175,10 @@ Output JSON only:"""
             data = json.loads(clean)
             batches = data.get("batches", [])
             
-            self.memory.remember(task, data)
+            # 4. Optimize the plan using learned patterns
+            batches = self._optimize_batches(batches, task)
+            
+            self.memory.remember(task, {"batches": batches})
             logger.info(f"Plan: {len(batches)} batches")
             
             # Record successful planning
@@ -158,6 +205,57 @@ Output JSON only:"""
             
             # Fallback: single blind batch
             return [{"type": "blind", "description": task, "actions": [task]}]
+    
+    def _pattern_to_batches(self, pattern, task: str) -> List[Dict]:
+        """Convert a learned pattern to action batches."""
+        # Extract variables from the current task
+        _, variables = self.pattern_store.normalize_task(task)
+        
+        # Apply pattern with current variables
+        actions = self.pattern_store.apply_pattern(pattern, variables)
+        
+        # Use action optimizer to batch them
+        batches = self.action_optimizer.batch_actions(actions)
+        
+        return batches
+    
+    def _get_pattern_hints(self, similar_patterns) -> str:
+        """Generate hints from similar patterns for the LLM."""
+        if not similar_patterns:
+            return ""
+        
+        hints = ["\n## Similar Patterns (for reference):"]
+        for pattern, similarity in similar_patterns[:3]:  # Top 3 patterns
+            if pattern.success_rate > 0.7:
+                hints.append(f"- Pattern '{pattern.task_template}' works well ({pattern.success_rate:.0%} success)")
+                if pattern.optimized_waits:
+                    avg_wait = sum(pattern.optimized_waits.values()) / len(pattern.optimized_waits)
+                    hints.append(f"  Optimal avg wait: {avg_wait:.1f}s")
+        
+        return "\n".join(hints) + "\n" if len(hints) > 1 else ""
+    
+    def _optimize_batches(self, batches: List[Dict], task: str) -> List[Dict]:
+        """Optimize batches using the action optimizer."""
+        optimized_batches = []
+        
+        for batch in batches:
+            if batch.get("type") == "blind":
+                actions = batch.get("actions", [])
+                if actions:
+                    # Optimize the action sequence
+                    result = self.action_optimizer.optimize_sequence(
+                        actions,
+                        context={"task": task}
+                    )
+                    
+                    if result.changes_made:
+                        logger.debug(f"Optimizations: {', '.join(result.changes_made[:3])}")
+                    
+                    batch["actions"] = result.optimized_actions
+            
+            optimized_batches.append(batch)
+        
+        return optimized_batches
 
     def plan_simple(self, task: str) -> List[str]:
         """Legacy method - returns flat subtask list."""

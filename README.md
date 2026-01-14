@@ -8,6 +8,9 @@ Refactored implementation based on Agent-S patterns with **intelligent self-evol
 - **Smart Planning**: AI-powered task decomposition
 - **Self-Evolving Prompts**: Automatically learns from failures and improves
 - **Comprehensive Monitoring**: Track success rates and system performance
+- **Advanced Cursor Movement**: macOS keyboard shortcuts for 10-100x speed improvement
+- **Human-Like Text Manipulation**: Efficient text editing like a power user
+- **💭 Thinking Window**: Real-time visualization of AI reasoning (like Claude/ChatGPT thinking models)
 
 ## Components
 - **Planner**: Gemini 3 Pro (CLI) - Task decomposition with evolved prompts
@@ -100,6 +103,8 @@ python -m src.main --task "open safari"
 
 ## 📚 Documentation
 
+- **[THINKING_WINDOW.md](THINKING_WINDOW.md)** - Floating window showing real-time AI thinking
+- **[CURSOR_MOVEMENT_GUIDE.md](CURSOR_MOVEMENT_GUIDE.md)** - Complete guide to macOS shortcuts (10-100x faster!)
 - **[PROMPT_SYSTEM.md](PROMPT_SYSTEM.md)** - Complete prompt evolution documentation
 - **[IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)** - What was built and how
 - **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Quick commands and troubleshooting
@@ -117,12 +122,46 @@ python -m src.main --task "search for AI news in safari"
 python -m src.main --task "open calculator"
 ```
 
-### Complex Tasks
+### Complex Tasks with Cursor Movement (Lightning Fast!)
 ```bash
-python -m src.main --task "open safari, search python tutorials, click first result"
+# Replace text efficiently (uses Cmd+A instead of 50 backspaces!)
+python -m src.main --task "open notes and replace all text with 'Hello World'"
+
+# Navigate and edit URL (uses Cmd+L auto-select)
+python -m src.main --task "open safari, navigate to youtube.com"
+
+# Copy entire document (uses Cmd+A + Cmd+C)
+python -m src.main --task "open notes and copy all content"
 ```
 
-## 📊 Monitoring
+See [CURSOR_MOVEMENT_GUIDE.md](CURSOR_MOVEMENT_GUIDE.md) for all keyboard shortcuts.
+
+## � Thinking Window
+
+The agent includes a **floating thinking window** that displays real-time AI reasoning, similar to Claude's thinking models or ChatGPT Mac app.
+
+### Features
+- **Real-time display** of planner, executor, and supervisor thinking
+- **Always-on-top** floating window with macOS-style design
+- **Color-coded messages** by component (Planner, Executor, Supervisor)
+- **Draggable and collapsible** for minimal distraction
+- **Status indicators** showing current agent state
+
+### Usage
+```bash
+# Enable thinking window (default in loop mode)
+python -m src.main --task "your task" --loop
+
+# Disable if preferred
+python -m src.main --task "your task" --loop --no-thinking-window
+
+# Demo the thinking window
+python demo_thinking_window.py
+```
+
+See [THINKING_WINDOW.md](THINKING_WINDOW.md) for complete documentation.
+
+## �📊 Monitoring
 
 ### View Statistics
 ```bash

@@ -42,5 +42,287 @@
         "action": "click the first video result to play it"
       }
     ]
+  },
+  "open latest mrbeast video": {
+    "batches": [
+      {
+        "type": "blind",
+        "description": "Open Safari and navigate directly to MrBeast's videos page",
+        "actions": [
+          "hotkey:command,space",
+          "wait:0.5",
+          "type:Safari",
+          "key:return",
+          "wait:1.5",
+          "hotkey:command,l",
+          "wait:0.2",
+          "type:youtube.com/@MrBeast/videos",
+          "key:return",
+          "wait:3.0"
+        ]
+      },
+      {
+        "type": "vision",
+        "description": "Identify and click the latest video (first item in the grid)",
+        "action": "click the thumbnail or title of the first video in the latest videos grid"
+      }
+    ]
+  },
+  "open latest daniel dalen video": {
+    "batches": [
+      {
+        "type": "blind",
+        "description": "Open Safari and navigate to Daniel Dalen's videos page",
+        "actions": [
+          "hotkey:command,space",
+          "wait:0.5",
+          "type:Safari",
+          "key:return",
+          "wait:1.5",
+          "hotkey:command,l",
+          "wait:0.2",
+          "type:https://www.youtube.com/@DanielDalen/videos",
+          "key:return"
+        ]
+      },
+      {
+        "type": "vision",
+        "description": "Identify and click the latest video",
+        "action": "click the first video thumbnail in the grid which represents the latest upload"
+      }
+    ]
+  },
+  "create a folder in desktop named jhonny and add a txt file having the jhhony jhonny famous poem": {
+    "batches": [
+      {
+        "type": "blind",
+        "description": "Open Terminal and create folder with poem file using shell commands",
+        "actions": [
+          "hotkey:command,space",
+          "wait:0.5",
+          "type:Terminal",
+          "key:return",
+          "wait:1.5",
+          "type:mkdir -p ~/Desktop/jhonny",
+          "key:return",
+          "wait:0.5",
+          "type:printf \"Johnny, Johnny\\nYes, Papa?\\nEating sugar?\\nNo, papa.\\nTelling lies?\\nNo, papa.\\nOpen your mouth\\nHa, ha, ha!\" > ~/Desktop/jhonny/poem.txt",
+          "key:return",
+          "wait:1.0",
+          "hotkey:command,q"
+        ]
+      }
+    ]
+  },
+  "create a folder in desktop named jhonny and add a txt file having the jhonny jhonny famous poem not using terminal but only finder and text editor": {
+    "batches": [
+      {
+        "type": "blind",
+        "description": "Create 'jhonny' folder on Desktop using Finder",
+        "actions": [
+          "hotkey:command,space",
+          "wait:0.5",
+          "type:Desktop",
+          "key:return",
+          "wait:1.0",
+          "hotkey:command,shift,n",
+          "wait:0.5",
+          "type:jhonny",
+          "key:return"
+        ]
+      },
+      {
+        "type": "blind",
+        "description": "Open TextEdit and write the poem",
+        "actions": [
+          "hotkey:command,space",
+          "wait:0.5",
+          "type:TextEdit",
+          "key:return",
+          "wait:2.0",
+          "hotkey:command,n",
+          "wait:1.0",
+          "type:Johny, Johny,",
+          "key:return",
+          "type:Yes, Papa?",
+          "key:return",
+          "type:Eating sugar?",
+          "key:return",
+          "type:No, papa!",
+          "key:return",
+          "type:Telling lies?",
+          "key:return",
+          "type:No, papa!",
+          "key:return",
+          "type:Open your mouth!",
+          "key:return",
+          "type:Ha, ha, ha!"
+        ]
+      },
+      {
+        "type": "blind",
+        "description": "Save the poem to the new folder",
+        "actions": [
+          "hotkey:command,s",
+          "wait:1.0",
+          "hotkey:command,shift,g",
+          "wait:0.5",
+          "type:~/Desktop/jhonny",
+          "key:return",
+          "wait:0.5",
+          "type:poem.txt",
+          "key:return"
+        ]
+      }
+    ]
+  },
+  "open mrbeast latest video": {
+    "batches": [
+      {
+        "type": "blind",
+        "description": "Open Safari and navigate to MrBeast's latest videos",
+        "actions": [
+          "hotkey:command,space",
+          "wait:0.5",
+          "type:Safari",
+          "key:return",
+          "wait:1.5",
+          "hotkey:command,l",
+          "wait:0.2",
+          "type:https://www.youtube.com/@MrBeast/videos",
+          "key:return",
+          "wait:3.0"
+        ]
+      },
+      {
+        "type": "vision",
+        "description": "Identify and click the most recent video",
+        "action": "click on the first video thumbnail in the video grid"
+      }
+    ]
+  },
+  "create 10 nested folders inside desktop named jhonny and in the last folder create a file jhonny poem in txt file": {
+    "batches": [
+      {
+        "type": "blind",
+        "description": "Create 10 nested folders on the desktop and a text file in the deepest folder.",
+        "actions": [
+          "hotkey:command,space",
+          "wait:0.5",
+          "type:Terminal",
+          "key:return",
+          "wait:1.5",
+          "type:cd ~/Desktop && mkdir -p jhonny/jhonny/jhonny/jhonny/jhonny/jhonny/jhonny/jhonny/jhonny/jhonny && touch jhonny/jhonny/jhonny/jhonny/jhonny/jhonny/jhonny/jhonny/jhonny/jhonny/\"jhonny poem.txt\"",
+          "key:return",
+          "wait:1.0",
+          "type:exit",
+          "key:return"
+        ]
+      }
+    ]
+  },
+  "open latest tseries video": {
+    "batches": [
+      {
+        "type": "blind",
+        "description": "Open Safari and search for T-Series on YouTube",
+        "actions": [
+          "hotkey:command,space",
+          "wait:0.5",
+          "type:Safari",
+          "key:return",
+          "wait:1.0",
+          "hotkey:command,l",
+          "wait:0.2",
+          "type:https://www.youtube.com/results?search_query=tseries",
+          "key:return",
+          "wait:2.0"
+        ]
+      },
+      {
+        "type": "vision",
+        "description": "Click on the T-Series channel link",
+        "action": "click on the T-Series channel link in the search results"
+      },
+      {
+        "type": "vision",
+        "description": "Click on the 'Videos' tab",
+        "action": "click on the 'Videos' tab to see all videos sorted by date"
+      },
+      {
+        "type": "vision",
+        "description": "Click on the latest video",
+        "action": "click on the first video in the list, which is the latest one"
+      }
+    ]
+  },
+  "create a image using nano banana on covid-19": {
+    "batches": [
+      {
+        "type": "blind",
+        "description": "Open Safari and search for an AI image generator.",
+        "actions": [
+          "hotkey:command,space",
+          "wait:0.5",
+          "type:Safari",
+          "key:return",
+          "wait:1.0",
+          "hotkey:command,l",
+          "wait:0.2",
+          "type:AI image generator",
+          "key:return",
+          "wait:2.0"
+        ]
+      },
+      {
+        "type": "vision",
+        "description": "Click on a promising search result for an image generator.",
+        "action": "Click on a search result that appears to be a free and reputable AI image generator."
+      },
+      {
+        "type": "vision",
+        "description": "Enter the image prompt into the text field.",
+        "action": "Find the main text input field for the image prompt, click on it, and type 'a microscopic photo of a banana made of nanites attacking a covid-19 virus cell'."
+      },
+      {
+        "type": "vision",
+        "description": "Click the button to generate the image.",
+        "action": "Click the 'generate', 'create', or 'imagine' button to start the image creation process."
+      }
+    ]
+  },
+  "create a image using nano banana on movie dune 3, prompt of ur choice": {
+    "batches": [
+      {
+        "type": "blind",
+        "description": "Open Safari and search for nano banana.",
+        "actions": [
+          "hotkey:command,space",
+          "wait:0.5",
+          "type:Safari",
+          "key:return",
+          "wait:1.0",
+          "hotkey:command,l",
+          "wait:0.2",
+          "type:nano banana",
+          "key:return"
+        ]
+      },
+      {
+        "type": "vision",
+        "description": "Click on the most relevant search result for 'nano banana'.",
+        "action": "click on the most relevant link for 'nano banana' image generator"
+      },
+      {
+        "type": "vision",
+        "description": "Enter the prompt for the image generation.",
+        "action": "type 'epic movie poster for Dune 3, a giant sandworm cresting a dune on Arrakis, two moons in the sky, highly detailed, cinematic lighting' in the prompt text area"
+      },
+      {
+        "type": "vision",
+        "description": "Click the generate button to create the image.",
+        "action": "click the 'generate' or 'create' button"
+      }
+    ]
   }
 }
