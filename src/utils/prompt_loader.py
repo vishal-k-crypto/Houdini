@@ -93,14 +93,14 @@ class PromptLoader:
             logger.error(f"Failed to extract {component} from comprehensive instructions: {e}")
             return None
     
-    def load_prompt(self, component: str, force_reload: bool = False, use_comprehensive: bool = True) -> str:
+    def load_prompt(self, component: str, force_reload: bool = False, use_comprehensive: bool = False) -> str:
         """
         Load a component's prompt.
         
         Args:
             component: "planner", "executor", or "supervisor"
             force_reload: Force reload from disk (bypass cache)
-            use_comprehensive: Try comprehensive instructions first, then individual files
+            use_comprehensive: Try comprehensive instructions first, then individual files. Defaults to False for efficiency.
         
         Returns:
             The prompt text as a string
@@ -140,6 +140,15 @@ class PromptLoader:
             except Exception as e:
                 logger.error(f"Failed to load prompt for {component}: {e}")
         
+        # If individual file failed, try comprehensive instructions as fallback
+        if not use_comprehensive:
+             logger.warning(f"Individual prompt file missing for {component}. Attempting to load from comprehensive instructions.")
+             prompt_text = self._extract_section_from_comprehensive(component)
+             if prompt_text:
+                self._cache[component] = prompt_text
+                self._versions[component] = int(self.comprehensive_file.stat().st_mtime)
+                return prompt_text
+
         # Last resort: fallback prompt
         logger.warning(f"Using fallback prompt for {component}")
         return self._get_fallback_prompt(component)
