@@ -15,6 +15,12 @@ from ..utils.accessibility_reader import (
 )
 from ..utils.gemini_client import GeminiCLI
 
+# Pre-compiled regex patterns for performance
+_POSITION_FIRST_RE = re.compile(r'\b(first|latest|top|1st)\b')
+_POSITION_SECOND_RE = re.compile(r'\b(second|2nd)\b')
+_POSITION_LAST_RE = re.compile(r'\b(last|bottom)\b')
+_QUOTED_TEXT_RE = re.compile(r'["\']([^"\']+)["\']')
+
 
 def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts: int = 3) -> Dict:
     """
@@ -175,11 +181,11 @@ def _parse_intent(action_desc: str) -> Dict:
     }
     
     # Determine position preference
-    if re.search(r'\b(first|latest|top|1st)\b', action_desc):
+    if _POSITION_FIRST_RE.search(action_desc):
         intent["position"] = "first"
-    elif re.search(r'\b(second|2nd)\b', action_desc):
+    elif _POSITION_SECOND_RE.search(action_desc):
         intent["position"] = "second"
-    elif re.search(r'\b(last|bottom)\b', action_desc):
+    elif _POSITION_LAST_RE.search(action_desc):
         intent["position"] = "last"
     
     # Determine target type
@@ -195,7 +201,7 @@ def _parse_intent(action_desc: str) -> Dict:
         intent["target_type"] = "title"
     
     # Extract quoted text or specific keywords
-    quoted = re.findall(r'["\']([^"\']+)["\']', action_desc)
+    quoted = _QUOTED_TEXT_RE.findall(action_desc)
     if quoted:
         intent["keywords"] = quoted
     
