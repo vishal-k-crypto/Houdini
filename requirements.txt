@@ -5,5 +5,17 @@ pytesseract>=0.3.10
 pillow>=10.0.0
 llama-cpp-python>=0.2.90
 playwright>=1.48.0
-google-generativeai>=0.8.0
 python-dotenv>=1.0.0
+
+# NOTE: Ollama is required but installed separately (not a Python package)
+# Install from: https://ollama.ai or run: brew install ollama
+
+# macOS Accessibility API (native integration)
+pyobjc-core>=10.0
+pyobjc-framework-Cocoa>=10.0
+pyobjc-framework-Quartz>=10.0
+pyobjc-framework-ApplicationServices>=10.0
+
+# Human-like cursor control
+numpy>=1.24.0
+scipy>=1.11.0

@@ -1,13 +1,17 @@
+"""
+Ollama-based Planner using Qwen 3 Coder model.
+Replaces Gemini planner with Ollama Qwen 3 Coder 480B.
+"""
 import json
 from typing import List, Dict, Optional
 from pathlib import Path
-from ..utils.gemini_client import GeminiCLI
+from ..utils.ollama_client import OllamaClient
 from ..utils.logging import logger
 from ..utils.prompt_loader import get_planner_prompt
 from ..utils.prompt_evolution import prompt_evolution
-from ..utils.pattern_store import pattern_store, PatternStore
+from ..utils.pattern_store import pattern_store
 from ..utils.choice_tracker import choice_tracker
-from ..utils.action_optimizer import action_optimizer, ActionOptimizer
+from ..utils.action_optimizer import action_optimizer
 from ..ui.thinking_window import show_planner_thinking, show_thinking
 
 TASK_HISTORY_FILE = Path(__file__).parent.parent.parent / "data" / "task_history.json"
@@ -93,22 +97,29 @@ class TaskMemory:
         self._save()
 
 
-class GeminiPlanner:
+class OllamaPlanner:
     """
-    Smart Planner - generates batched blind vs vision actions.
-    Now enhanced with pattern learning for efficiency.
+    Ollama-based Smart Planner using Qwen 3 Coder 480B.
+    Generates batched blind vs vision actions with pattern learning.
     """
-    def __init__(self, cli: GeminiCLI):
-        self.cli = cli
+    def __init__(self, client: OllamaClient):
+        self.client = client
         self.memory = TaskMemory()
         self.pattern_store = pattern_store
         self.action_optimizer = action_optimizer
 
-    def plan(self, task: str) -> List[Dict]:
+    def plan(self, task: str, executor_history: Optional[List[Dict]] = None) -> List[Dict]:
         """
-        Returns list of action batches:
-        [{"type": "blind", "actions": [...], "description": "..."},
-         {"type": "vision", "action": "...", "description": "..."}]
+        Generate plan for task with awareness of previous executor operations.
+        
+        Args:
+            task: User task description
+            executor_history: List of previous tasks executor has completed
+        
+        Returns:
+            List of action batches:
+            [{"type": "blind", "actions": [...], "description": "..."},
+             {"type": "vision", "action": "...", "description": "..."}]
         """
         # 1. Check for high-confidence learned patterns first
         similar_patterns = self.pattern_store.find_similar(task, threshold=0.7)
@@ -133,12 +144,14 @@ class GeminiPlanner:
                 pass
             return cached.get("batches", [{"type": "blind", "actions": [task]}])
         
-        # 3. Generate pattern hints for the LLM
+        # 3. Generate with executor history context
         try:
-            show_planner_thinking("Generating new plan with LLM...")
+            show_planner_thinking("Generating new plan with Ollama Qwen 3 Coder...")
         except:
             pass
+        
         pattern_hints = self._get_pattern_hints(similar_patterns)
+        history_context = self._format_executor_history(executor_history)
         
         # Load evolved system prompt
         system_prompt = get_planner_prompt()
@@ -146,121 +159,135 @@ class GeminiPlanner:
         prompt = f"""{system_prompt}
 
 ## Task: {task}
+
+{history_context}
+
 {pattern_hints}
+
 ## Output Format
-Generate a plan with batched actions. Output JSON:
+Return a JSON object with this structure:
 {{
   "batches": [
-    {{"type": "blind", "description": "Open Safari and search", "actions": ["hotkey:command,space", "type:Safari", "key:enter", "wait:0.5", "hotkey:command,l", "type:python tutorials", "key:enter"]}},
-    {{"type": "vision", "description": "Click first result", "action": "click first search result"}}
+    {{
+      "type": "blind",
+      "description": "What this batch does",
+      "actions": [
+        "hotkey:command,space",
+        "type:Safari",
+        "key:return",
+        "wait:1.5"
+      ]
+    }},
+    {{
+      "type": "vision",
+      "description": "What to find and click",
+      "action": "click the first search result"
+    }}
   ]
 }}
 
-Action format for blind actions:
-- "hotkey:key1,key2" (e.g., "hotkey:command,space")
-- "type:text" (e.g., "type:Safari")
-- "key:keyname" (e.g., "key:enter")
-- "wait:seconds" (e.g., "wait:0.5")
-
-Output JSON only:"""
+Generate the plan now:
+"""
         
-        response = self.cli.generate(prompt)
+        # Generate with Ollama
         try:
-            clean = response.strip()
-            if "```json" in clean:
-                clean = clean.split("```json")[1].split("```")[0]
-            elif "```" in clean:
-                clean = clean.split("```")[1].split("```")[0]
+            response = self.client.generate_json(prompt, system_prompt=None, temperature=0.3)
             
-            data = json.loads(clean)
-            batches = data.get("batches", [])
+            if "batches" not in response:
+                raise ValueError("Response missing 'batches' key")
             
-            # 4. Optimize the plan using learned patterns
-            batches = self._optimize_batches(batches, task)
+            batches = response["batches"]
             
+            # Optimize actions
+            batches = self.action_optimizer.optimize_plan(batches)
+            
+            # Cache the plan
             self.memory.remember(task, {"batches": batches})
-            logger.info(f"Plan: {len(batches)} batches")
             
-            # Record successful planning
-            prompt_evolution.record_feedback(
-                component="planner",
-                task=task,
-                success=True,
-                actions_taken=[b.get("description", "") for b in batches]
-            )
+            # Track this choice
+            choice_tracker.add_choice(task, {"plan": batches})
             
+            logger.info(f"✅ Generated plan with {len(batches)} batches")
             return batches
             
         except Exception as e:
-            logger.error(f"Plan parse failed: {e}")
-            
-            # Record planning failure
-            prompt_evolution.record_feedback(
-                component="planner",
-                task=task,
-                success=False,
-                error_type="parse_error",
-                error_details=str(e)
-            )
-            
-            # Fallback: single blind batch
-            return [{"type": "blind", "description": task, "actions": [task]}]
+            logger.error(f"Failed to generate plan with Ollama: {e}")
+            # Fallback to simple plan
+            return self._fallback_plan(task)
     
-    def _pattern_to_batches(self, pattern, task: str) -> List[Dict]:
-        """Convert a learned pattern to action batches."""
-        # Extract variables from the current task
-        _, variables = self.pattern_store.normalize_task(task)
+    def _format_executor_history(self, history: Optional[List[Dict]]) -> str:
+        """Format executor history for context."""
+        if not history:
+            return ""
         
-        # Apply pattern with current variables
-        actions = self.pattern_store.apply_pattern(pattern, variables)
+        context = "\n## Previous Executor Operations\n"
+        context += "The executor has previously completed these tasks:\n"
         
-        # Use action optimizer to batch them
-        batches = self.action_optimizer.batch_actions(actions)
+        for i, item in enumerate(history[-5:], 1):  # Last 5 tasks
+            task_desc = item.get("task", "Unknown task")
+            success = item.get("success", False)
+            timestamp = item.get("timestamp", "")
+            status = "✓" if success else "✗"
+            
+            context += f"{i}. {status} {task_desc}"
+            if timestamp:
+                context += f" (at {timestamp})"
+            context += "\n"
         
-        return batches
+        context += "\nConsider this context when planning the current task.\n"
+        return context
     
     def _get_pattern_hints(self, similar_patterns) -> str:
-        """Generate hints from similar patterns for the LLM."""
+        """Generate hints from similar patterns."""
         if not similar_patterns:
             return ""
         
-        hints = ["\n## Similar Patterns (for reference):"]
-        for pattern, similarity in similar_patterns[:3]:  # Top 3 patterns
-            if pattern.success_rate > 0.7:
-                hints.append(f"- Pattern '{pattern.task_template}' works well ({pattern.success_rate:.0%} success)")
-                if pattern.optimized_waits:
-                    avg_wait = sum(pattern.optimized_waits.values()) / len(pattern.optimized_waits)
-                    hints.append(f"  Optimal avg wait: {avg_wait:.1f}s")
+        hints = "\n## Similar Task Patterns Found\n"
+        for pattern in similar_patterns[:3]:  # Top 3
+            hints += f"- Pattern: {pattern.task_template} (confidence: {pattern.confidence:.0%})\n"
+            hints += f"  Average time: {pattern.avg_execution_time:.1f}s\n"
         
-        return "\n".join(hints) + "\n" if len(hints) > 1 else ""
+        return hints
     
-    def _optimize_batches(self, batches: List[Dict], task: str) -> List[Dict]:
-        """Optimize batches using the action optimizer."""
-        optimized_batches = []
+    def _pattern_to_batches(self, pattern, task: str) -> List[Dict]:
+        """Convert a pattern to executable batches."""
+        try:
+            # Pattern stores the successful plan structure
+            return pattern.plan_structure.get("batches", [])
+        except:
+            return self._fallback_plan(task)
+    
+    def _fallback_plan(self, task: str) -> List[Dict]:
+        """Generate a simple fallback plan when LLM fails."""
+        logger.warning("Using fallback plan")
         
-        for batch in batches:
-            if batch.get("type") == "blind":
-                actions = batch.get("actions", [])
-                if actions:
-                    # Optimize the action sequence
-                    result = self.action_optimizer.optimize_sequence(
-                        actions,
-                        context={"task": task}
-                    )
-                    
-                    if result.changes_made:
-                        logger.debug(f"Optimizations: {', '.join(result.changes_made[:3])}")
-                    
-                    batch["actions"] = result.optimized_actions
-            
-            optimized_batches.append(batch)
-        
-        return optimized_batches
+        # Simple heuristic-based plan
+        if "search" in task.lower():
+            return [
+                {
+                    "type": "blind",
+                    "description": "Open Safari and search",
+                    "actions": [
+                        "hotkey:command,space",
+                        "type:Safari",
+                        "key:return",
+                        "wait:1.5",
+                        "hotkey:command,l",
+                        f"type:{task}",
+                        "key:return",
+                        "wait:2"
+                    ]
+                }
+            ]
+        else:
+            return [
+                {
+                    "type": "blind",
+                    "description": task,
+                    "actions": [task]
+                }
+            ]
 
-    def plan_simple(self, task: str) -> List[str]:
-        """Legacy method - returns flat subtask list."""
-        batches = self.plan(task)
-        subtasks = []
-        for b in batches:
-            subtasks.append(b.get("description", str(b)))
-        return subtasks if subtasks else [task]
+
+# Alias for compatibility
+QwenPlanner = OllamaPlanner

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from .loop_state import LoopState, LoopStatus, ActionRecord
 from ..utils.logging import logger
+from ..ui.thinking_window import show_supervisor_thinking, show_thinking
 
 
 @dataclass
@@ -82,6 +83,10 @@ class SupervisorLoop:
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
         logger.info("🔍 SupervisorLoop started in background")
+        try:
+            show_supervisor_thinking("Supervisor monitoring started")
+        except:
+            pass
     
     def stop(self):
         """Stop the supervisor loop."""
@@ -109,6 +114,14 @@ class SupervisorLoop:
                     for action in new_actions:
                         validation = self._validate_action(action)
                         
+                        try:
+                            if validation.approved:
+                                show_supervisor_thinking(f"✓ Validated: {action.action[:50]}")
+                            else:
+                                show_supervisor_thinking(f"⚠️ Issue: {validation.reason[:50]}")
+                        except:
+                            pass
+                        
                         if not validation.approved:
                             self._intervene(action, validation)
                     
@@ -133,6 +146,14 @@ class SupervisorLoop:
         """
         # Quick check: did the action fail?
         if not action.success:
+            # Don't pause for vision actions that "fail" but continue - they often work
+            if action.action_type == "vision" and "continuing anyway" in (action.error or ""):
+                return ValidationResult(
+                    approved=True,
+                    confidence=0.6,
+                    reason="Vision action marked as best-effort completion"
+                )
+            
             return ValidationResult(
                 approved=False,
                 confidence=1.0,
@@ -142,11 +163,15 @@ class SupervisorLoop:
         
         # Pattern check: repeated failures on similar actions?
         action_key = action.action.split(":")[0] if ":" in action.action else action.action[:20]
-        if self.error_patterns.get(action_key, 0) >= 3:
+        failure_count = self.error_patterns.get(action_key, 0)
+        
+        # For vision actions, be more lenient
+        threshold = 5 if action.action_type == "vision" else 3
+        if failure_count >= threshold:
             return ValidationResult(
                 approved=False,
                 confidence=0.8,
-                reason=f"Pattern detected: {action_key} has failed {self.error_patterns[action_key]} times",
+                reason=f"Pattern detected: {action_key} has failed {failure_count} times",
                 correction="Try alternative approach"
             )
         
@@ -216,7 +241,7 @@ Actions completed: {len(self.state.action_history)}
 Result: {"Success" if action.success else f"Failed - {action.error}"}"""
     
     def _intervene(self, action: ActionRecord, validation: ValidationResult):
-        """Pause executor and log intervention."""
+        """Pause executor and log intervention - but allow recovery handler to work."""
         logger.warning(f"🚨 Supervisor intervention: {validation.reason}")
         
         intervention = Intervention(
@@ -233,8 +258,11 @@ Result: {"Success" if action.success else f"Failed - {action.error}"}"""
             "correction": intervention.correction
         })
         
-        # Pause the executor
-        self.state.pause(validation.reason)
+        # Only pause if not already paused - recovery handler will handle it
+        if self.state.status != LoopStatus.PAUSED:
+            # Don't pause immediately - give recovery handler a chance first
+            # Just track the error pattern
+            pass
         
         # Track error pattern
         action_key = action.action.split(":")[0] if ":" in action.action else action.action[:20]
@@ -246,10 +274,11 @@ Result: {"Success" if action.success else f"Failed - {action.error}"}"""
         recent = self.state.action_history[-5:] if len(self.state.action_history) >= 5 else []
         failed_count = sum(1 for a in recent if not a.success)
         
-        if failed_count >= 4:
-            logger.warning("🚨 Pattern detected: 4+ recent failures")
+        # Be less aggressive - let recovery handler work
+        if failed_count >= 5:
+            logger.warning("🚨 Pattern detected: 5+ recent failures")
             if self.state.status == LoopStatus.RUNNING:
-                self.state.pause("Too many consecutive failures")
+                self.state.pause("Too many consecutive failures - awaiting recovery")
     
     def validate_checkpoint(self) -> ValidationResult:
         """

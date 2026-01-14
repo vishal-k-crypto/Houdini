@@ -3,17 +3,20 @@ Prompt Loader - Centralized system for loading and managing component prompts.
 
 This module provides a unified interface for accessing prompts used by the
 Planner, Executor, and Supervisor components. It supports:
-- Loading prompts from markdown files
+- Loading prompts from markdown files (individual or comprehensive)
 - Caching for performance
 - Version tracking
 - Dynamic reloading for evolved prompts
+- Extraction of specific sections from comprehensive instructions
 """
 
 from pathlib import Path
 from typing import Dict, Optional
+import re
 from ..utils.logging import logger
 
 PROMPTS_DIR = Path(__file__).parent.parent.parent / "prompts"
+COMPREHENSIVE_INSTRUCTIONS_FILE = "comprehensive_agent_instructions.md"
 
 
 class PromptLoader:
@@ -25,23 +28,79 @@ class PromptLoader:
     - Automatic cache invalidation
     - Support for prompt evolution
     - Fallback to embedded prompts
+    - Extraction from comprehensive instructions file
     """
     
     def __init__(self, prompts_dir: Path = PROMPTS_DIR):
         self.prompts_dir = prompts_dir
         self._cache: Dict[str, str] = {}
         self._versions: Dict[str, int] = {}
+        self.comprehensive_file = self.prompts_dir / COMPREHENSIVE_INSTRUCTIONS_FILE
         
         # Ensure prompts directory exists
         self.prompts_dir.mkdir(parents=True, exist_ok=True)
     
-    def load_prompt(self, component: str, force_reload: bool = False) -> str:
+    def _extract_section_from_comprehensive(self, component: str) -> Optional[str]:
+        """
+        Extract a specific agent's section from comprehensive instructions.
+        
+        Args:
+            component: "planner", "executor", or "supervisor"
+        
+        Returns:
+            The extracted section or None if not found
+        """
+        if not self.comprehensive_file.exists():
+            return None
+        
+        try:
+            with open(self.comprehensive_file, 'r') as f:
+                content = f.read()
+            
+            # Define section markers for each component
+            section_markers = {
+                "planner": (
+                    r"# PART 1: PLANNER AGENT COMPREHENSIVE INSTRUCTIONS",
+                    r"# PART 2: EXECUTOR AGENT COMPREHENSIVE INSTRUCTIONS"
+                ),
+                "executor": (
+                    r"# PART 2: EXECUTOR AGENT COMPREHENSIVE INSTRUCTIONS",
+                    r"# PART 3: SUPERVISOR AGENT COMPREHENSIVE INSTRUCTIONS"
+                ),
+                "supervisor": (
+                    r"# PART 3: SUPERVISOR AGENT COMPREHENSIVE INSTRUCTIONS",
+                    r"# COMPREHENSIVE INSTRUCTIONS SUMMARY"
+                )
+            }
+            
+            if component not in section_markers:
+                return None
+            
+            start_marker, end_marker = section_markers[component]
+            
+            # Find the section
+            start_match = re.search(start_marker, content)
+            end_match = re.search(end_marker, content)
+            
+            if start_match and end_match:
+                section = content[start_match.start():end_match.start()].strip()
+                logger.info(f"📖 Extracted {component} section from comprehensive instructions ({len(section)} chars)")
+                return section
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to extract {component} from comprehensive instructions: {e}")
+            return None
+    
+    def load_prompt(self, component: str, force_reload: bool = False, use_comprehensive: bool = True) -> str:
         """
         Load a component's prompt.
         
         Args:
             component: "planner", "executor", or "supervisor"
             force_reload: Force reload from disk (bypass cache)
+            use_comprehensive: Try comprehensive instructions first, then individual files
         
         Returns:
             The prompt text as a string
@@ -50,30 +109,40 @@ class PromptLoader:
         if not force_reload and component in self._cache:
             return self._cache[component]
         
-        # Load from file
+        prompt_text = None
+        
+        # Try comprehensive instructions first (if enabled)
+        if use_comprehensive:
+            prompt_text = self._extract_section_from_comprehensive(component)
+            if prompt_text:
+                self._cache[component] = prompt_text
+                self._versions[component] = int(self.comprehensive_file.stat().st_mtime)
+                return prompt_text
+        
+        # Fall back to individual prompt file
         prompt_file = self.prompts_dir / f"{component}_prompt.md"
         
-        if not prompt_file.exists():
-            logger.warning(f"Prompt file not found: {prompt_file}")
-            return self._get_fallback_prompt(component)
+        if prompt_file.exists():
+            try:
+                with open(prompt_file, 'r') as f:
+                    prompt_text = f.read()
+                
+                # Cache the prompt
+                self._cache[component] = prompt_text
+                
+                # Track version (based on file modification time)
+                mtime = prompt_file.stat().st_mtime
+                self._versions[component] = int(mtime)
+                
+                logger.debug(f"Loaded {component} prompt from individual file ({len(prompt_text)} chars)")
+                return prompt_text
+                
+            except Exception as e:
+                logger.error(f"Failed to load prompt for {component}: {e}")
         
-        try:
-            with open(prompt_file, 'r') as f:
-                prompt_text = f.read()
-            
-            # Cache the prompt
-            self._cache[component] = prompt_text
-            
-            # Track version (based on file modification time)
-            mtime = prompt_file.stat().st_mtime
-            self._versions[component] = int(mtime)
-            
-            logger.debug(f"Loaded {component} prompt ({len(prompt_text)} chars)")
-            return prompt_text
-            
-        except Exception as e:
-            logger.error(f"Failed to load prompt for {component}: {e}")
-            return self._get_fallback_prompt(component)
+        # Last resort: fallback prompt
+        logger.warning(f"Using fallback prompt for {component}")
+        return self._get_fallback_prompt(component)
     
     def get_planner_prompt(self) -> str:
         """Get the planner system prompt."""

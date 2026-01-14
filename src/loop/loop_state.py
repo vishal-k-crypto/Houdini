@@ -32,6 +32,7 @@ class ActionRecord:
     success: bool = True
     error: Optional[str] = None
     duration_ms: float = 0.0
+    screenshot_path: Optional[str] = None  # Screenshot after action
 
 
 @dataclass
@@ -42,6 +43,7 @@ class Checkpoint:
     action_idx: int
     timestamp: datetime
     description: str
+    screenshot_path: Optional[str] = None  # Path to screenshot at this point
 
 
 @dataclass
@@ -152,8 +154,17 @@ class LoopState:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
     
     def record_action(self, action_type: str, action: str, success: bool = True, 
-                      error: Optional[str] = None, duration_ms: float = 0.0):
+                      error: Optional[str] = None, duration_ms: float = 0.0,
+                      capture_screenshot: bool = False):
         """Record an action that was taken."""
+        screenshot_path = None
+        if capture_screenshot:
+            try:
+                screenshot_path = self._capture_screenshot(f"action_{action_type}_{self.current_batch_idx}_{self.current_action_idx}")
+            except Exception as e:
+                from ..utils.logging import logger
+                logger.warning(f"Failed to capture action screenshot: {e}")
+        
         record = ActionRecord(
             action_type=action_type,
             action=action,
@@ -161,7 +172,8 @@ class LoopState:
             action_idx=self.current_action_idx,
             success=success,
             error=error,
-            duration_ms=duration_ms
+            duration_ms=duration_ms,
+            screenshot_path=screenshot_path
         )
         self.action_history.append(record)
     
@@ -191,17 +203,51 @@ class LoopState:
         """Check if all batches are done."""
         return self.current_batch_idx >= len(self.batches)
     
-    def save_checkpoint(self, description: str = "") -> Checkpoint:
+    def save_checkpoint(self, description: str = "", capture_screenshot: bool = True) -> Checkpoint:
         """Save current state as a checkpoint for potential rollback."""
+        screenshot_path = None
+        if capture_screenshot:
+            try:
+                screenshot_path = self._capture_screenshot(f"checkpoint_{str(uuid.uuid4())[:8]}")
+            except Exception as e:
+                from ..utils.logging import logger
+                logger.warning(f"Failed to capture checkpoint screenshot: {e}")
+        
         checkpoint = Checkpoint(
             checkpoint_id=str(uuid.uuid4())[:8],
             batch_idx=self.current_batch_idx,
             action_idx=self.current_action_idx,
             timestamp=datetime.now(),
-            description=description or f"Checkpoint at batch {self.current_batch_idx}"
+            description=description or f"Checkpoint at batch {self.current_batch_idx}",
+            screenshot_path=screenshot_path
         )
         self.checkpoints.append(checkpoint)
         return checkpoint
+    
+    def _capture_screenshot(self, name: str) -> str:
+        """Capture and save screenshot."""
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        
+        # Create screenshots directory
+        screenshots_dir = Path(__file__).parent.parent.parent / "data" / "screenshots" / self.task_id
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        screenshot_path = screenshots_dir / f"{timestamp}_{name}.png"
+        
+        # Capture screenshot using macOS screencapture
+        subprocess.run(
+            ["screencapture", "-x", "-C", str(screenshot_path)],
+            capture_output=True,
+            timeout=5
+        )
+        
+        if screenshot_path.exists():
+            return str(screenshot_path)
+        return None
     
     def rollback_to(self, checkpoint_id: str) -> bool:
         """Restore state to a previous checkpoint."""
