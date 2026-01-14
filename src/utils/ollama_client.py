@@ -14,6 +14,8 @@ class OllamaClient:
     Replaces Gemini for all agent operations.
     """
     
+    _is_verified = False
+
     def __init__(self, model_name: str = "qwen2.5-coder:32b", cloud_endpoint: Optional[str] = None):
         """
         Initialize Ollama client.
@@ -28,6 +30,9 @@ class OllamaClient:
     
     def _verify_installation(self):
         """Check if Ollama is available."""
+        if OllamaClient._is_verified:
+            return
+
         try:
             result = subprocess.run(
                 ["ollama", "list"],
@@ -37,6 +42,7 @@ class OllamaClient:
                 timeout=10
             )
             logger.info(f"Ollama is available. Models: {result.stdout.strip()[:100]}")
+            OllamaClient._is_verified = True
         except FileNotFoundError:
             raise RuntimeError(
                 "Ollama not found. Install it from https://ollama.ai\n"
