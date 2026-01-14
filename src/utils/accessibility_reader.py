@@ -2,6 +2,12 @@
 macOS Accessibility Reader
 Parses UI element trees for any application without screenshots.
 Uses macOS Accessibility APIs (AXUIElement) via pyobjc.
+
+IMPORTANT: macOS uses bottom-left origin, PyAutoGUI uses top-left origin.
+Coordinates must be converted!
+
+This module now uses the enhanced accessibility_api.py as primary method,
+with AppleScript as fallback.
 """
 
 import subprocess
@@ -10,7 +16,15 @@ from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from ..utils.logging import logger
 
-# Try to import pyobjc accessibility bindings
+# Try to import new native API
+try:
+    from .accessibility_api import AccessibilityAPI, AXElement as NativeAXElement
+    NATIVE_API_AVAILABLE = True
+except ImportError:
+    NATIVE_API_AVAILABLE = False
+    logger.warning("Native accessibility_api not available, using AppleScript only")
+
+# Try to import pyobjc accessibility bindings (for fallback)
 try:
     from ApplicationServices import (
         AXUIElementCreateSystemWide,
@@ -29,14 +43,42 @@ except ImportError:
     logger.warning("pyobjc not available, using AppleScript fallback")
 
 
+# Screen dimensions cache
+_screen_height = None
+
+
+def get_screen_height() -> int:
+    """Get screen height for coordinate conversion."""
+    global _screen_height
+    if _screen_height is None:
+        try:
+            import pyautogui
+            _, _screen_height = pyautogui.size()
+        except:
+            _screen_height = 1080  # Default fallback
+    return _screen_height
+
+
+def convert_macos_to_pyautogui_coords(x: int, y: int) -> Tuple[int, int]:
+    """
+    Convert macOS coordinates (bottom-left origin) to PyAutoGUI (top-left origin).
+    
+    macOS: (0, 0) = bottom-left, y increases upward
+    PyAutoGUI: (0, 0) = top-left, y increases downward
+    """
+    screen_height = get_screen_height()
+    converted_y = screen_height - y
+    return (x, converted_y)
+
+
 @dataclass
 class UIElement:
     """Represents a UI element."""
     role: str  # button, textField, link, etc.
     title: str  # Display text
     value: str  # Current value (for text fields)
-    x: int
-    y: int
+    x: int  # Already converted to PyAutoGUI coords
+    y: int  # Already converted to PyAutoGUI coords
     width: int
     height: int
     enabled: bool = True
@@ -44,6 +86,7 @@ class UIElement:
     
     @property
     def center(self) -> Tuple[int, int]:
+        """Return center coordinates (already in PyAutoGUI coordinate system)."""
         return (self.x + self.width // 2, self.y + self.height // 2)
     
     def __str__(self):
@@ -145,16 +188,26 @@ def get_ui_elements_applescript(max_elements: int = 50) -> List[UIElement]:
                     parts = line.split("|")
                     if len(parts) >= 6:
                         try:
+                            # Parse macOS coordinates
+                            macos_x = int(float(parts[2]))
+                            macos_y = int(float(parts[3]))
+                            width = int(float(parts[4]))
+                            height = int(float(parts[5]))
+                            
+                            # Convert to PyAutoGUI coordinates
+                            pyautogui_x, pyautogui_y = convert_macos_to_pyautogui_coords(macos_x, macos_y)
+                            
                             elements.append(UIElement(
                                 role=parts[0],
                                 title=parts[1],
                                 value=parts[1],
-                                x=int(float(parts[2])),
-                                y=int(float(parts[3])),
-                                width=int(float(parts[4])),
-                                height=int(float(parts[5]))
+                                x=pyautogui_x,
+                                y=pyautogui_y,
+                                width=width,
+                                height=height
                             ))
-                        except:
+                        except Exception as e:
+                            logger.debug(f"Failed to parse element: {e}")
                             pass
     except Exception as e:
         logger.error(f"AppleScript UI fetch failed: {e}")
@@ -162,11 +215,53 @@ def get_ui_elements_applescript(max_elements: int = 50) -> List[UIElement]:
     return elements[:max_elements]
 
 
-def get_ui_tree() -> Dict:
+def get_ui_tree(use_native: bool = True) -> Dict:
     """
     Get the full UI tree for the frontmost application.
     Returns structured data similar to DOM.
+    
+    Args:
+        use_native: Try native AccessibilityAPI first (faster)
     """
+    # Try native API first
+    if use_native and NATIVE_API_AVAILABLE:
+        try:
+            api = AccessibilityAPI()
+            tree = api.get_ui_tree(max_depth=5)
+            
+            if tree:
+                # Convert to old format for compatibility
+                elements = []
+                def collect(elem):
+                    if elem.position and elem.role != "AXWindow":
+                        # Convert NativeAXElement to UIElement format
+                        x, y = elem.position
+                        w, h = elem.size if elem.size else (0, 0)
+                        elements.append(UIElement(
+                            role=elem.role,
+                            title=elem.title or "",
+                            value=elem.value or "",
+                            x=x, y=y, width=w, height=h,
+                            enabled=elem.enabled,
+                            focused=elem.focused
+                        ))
+                    for child in elem.children:
+                        collect(child)
+                
+                collect(tree)
+                app_info = api.get_frontmost_app_info()
+                
+                logger.info(f"Native API: {len(elements)} elements")
+                return {
+                    "app": app_info.get("app", "Unknown"),
+                    "window": app_info.get("window", ""),
+                    "elements": elements,
+                    "count": len(elements)
+                }
+        except Exception as e:
+            logger.warning(f"Native API failed, falling back to AppleScript: {e}")
+    
+    # Fallback to AppleScript
     app_info = get_frontmost_app()
     elements = get_ui_elements_applescript()
     
@@ -198,11 +293,38 @@ def format_ui_for_llm(max_elements: int = 30) -> str:
     return "\n".join(lines)
 
 
-def find_element_by_text(search_text: str) -> Optional[UIElement]:
+def find_element_by_text(search_text: str, use_native: bool = True) -> Optional[UIElement]:
     """
     Find a UI element by its text content.
     Returns element with click coordinates.
+    
+    Args:
+        search_text: Text to search for
+        use_native: Try native API first
     """
+    # Try native API first
+    if use_native and NATIVE_API_AVAILABLE:
+        try:
+            api = AccessibilityAPI()
+            elements = api.find_elements_by_text(search_text)
+            
+            if elements:
+                elem = elements[0]
+                if elem.position and elem.size:
+                    x, y = elem.position
+                    w, h = elem.size
+                    return UIElement(
+                        role=elem.role,
+                        title=elem.title or "",
+                        value=elem.value or "",
+                        x=x, y=y, width=w, height=h,
+                        enabled=elem.enabled,
+                        focused=elem.focused
+                    )
+        except Exception as e:
+            logger.warning(f"Native search failed: {e}")
+    
+    # Fallback to AppleScript
     elements = get_ui_elements_applescript()
     search_lower = search_text.lower()
     
@@ -213,9 +335,46 @@ def find_element_by_text(search_text: str) -> Optional[UIElement]:
     return None
 
 
-def click_element(element: UIElement):
-    """Click on a UI element using its center coordinates."""
+def click_element(element: UIElement, duration: float = 0.3, human_like: bool = True):
+    """Click on a UI element using its center coordinates with smooth cursor movement.
+    
+    Args:
+        element: UIElement to click
+        duration: Movement duration (ignored if human_like=True)
+        human_like: Use human-like cursor movement (HumanCursor vs pyautogui)
+    """
+    # Try to use HumanCursor for more natural movement
+    if human_like:
+        try:
+            from .cursor_controller import HumanCursor
+            cursor = HumanCursor()
+            cursor.click_element(element)
+            return
+        except ImportError:
+            logger.warning("cursor_controller not available, using pyautogui")
+    
+    # Fallback to simple pyautogui
     import pyautogui
-    cx, cy = element.center
-    pyautogui.click(cx, cy)
+    
+    # Get current cursor position
+    current_x, current_y = pyautogui.position()
+    
+    # Get target position
+    target_x, target_y = element.center
+    
+    # Calculate distance for logging
+    distance = ((target_x - current_x)**2 + (target_y - current_y)**2)**0.5
+    
+    logger.info(f"Moving cursor: ({current_x}, {current_y}) → ({target_x}, {target_y}) [distance: {distance:.0f}px]")
+    
+    # Move cursor smoothly to target (visible movement)
+    pyautogui.moveTo(target_x, target_y, duration=duration)
+    
+    # Small pause before clicking
+    import time
+    time.sleep(0.05)
+    
+    # Click at current position
+    pyautogui.click()
+    
     logger.info(f"Clicked: {element}")

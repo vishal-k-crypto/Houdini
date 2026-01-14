@@ -4,8 +4,167 @@
 
 ### Run a Task (Evolution Happens Automatically)
 ```bash
-python -m src.main --task "your task here"
+# With thinking window (default)
+python -m src.main --task "your task here" --loop
+
+# Without thinking window
+python -m src.main --task "your task here" --loop --no-thinking-window
+
+# Demo the thinking window
+python demo_thinking_window.py
 ```
+
+## 💭 Thinking Window
+
+**Real-time AI reasoning display** - see what the agent is thinking!
+
+- **Planner** (Teal): Task analysis and planning
+- **Executor** (Orange): Action execution
+- **Supervisor** (Purple): Validation and monitoring
+- **Draggable**: Click header to move
+- **Collapsible**: Click - / + button
+- **Clear**: Click 🗑 to clear messages
+
+See [THINKING_WINDOW.md](THINKING_WINDOW.md) for details.
+
+## ⌨️ macOS Cursor Movement & Text Manipulation Features
+
+The agent supports **powerful macOS keyboard shortcuts** for lightning-fast automation - 10-100x faster than clicking!
+
+### 🎯 Text Navigation (Jump Instantly - No Clicking!)
+
+**Line Navigation:**
+```python
+"hotkey:command,left"   # Jump to beginning of line
+"hotkey:command,right"  # Jump to end of line
+```
+
+**Word Navigation:**
+```python
+"hotkey:option,left"    # Jump one word left
+"hotkey:option,right"   # Jump one word right
+```
+
+**Document Navigation:**
+```python
+"hotkey:command,up"     # Jump to top of document
+"hotkey:command,down"   # Jump to bottom of document
+```
+
+### ✂️ Text Selection (Add Shift to Any Movement)
+
+```python
+"hotkey:command,shift,right"  # Select to end of line
+"hotkey:option,shift,right"   # Select next word
+"hotkey:command,shift,down"   # Select to end of document
+"hotkey:command,a"            # Select all (fastest!)
+```
+
+### 🚀 Text Manipulation (Human Speed!)
+
+**Replace All Text (25x faster!):**
+```python
+# ❌ SLOW: 50 backspaces + type (51 actions)
+# ✅ FAST: 2 actions!
+["hotkey:command,a", "type:new text"]
+```
+
+**Delete Operations:**
+```python
+"hotkey:option,backspace"    # Delete word backwards (INSTANT!)
+"hotkey:command,backspace"   # Delete to beginning of line
+"hotkey:option,delete"       # Delete word forwards
+```
+
+**Clipboard Operations:**
+```python
+"hotkey:command,c"  # Copy
+"hotkey:command,x"  # Cut
+"hotkey:command,v"  # Paste
+```
+
+**Undo/Redo:**
+```python
+"hotkey:command,z"        # Undo
+"hotkey:command,shift,z"  # Redo
+```
+
+### 🪟 Window Management
+
+```python
+"hotkey:command,tab"          # Switch apps
+"hotkey:command,shift,tab"    # Switch apps backwards
+"hotkey:command,grave"        # Switch windows of same app (Cmd+`)
+"hotkey:control,left"         # Previous space/desktop
+"hotkey:control,right"        # Next space/desktop
+"hotkey:command,m"            # Minimize
+"hotkey:command,h"            # Hide app
+```
+
+### 🌐 Browser Shortcuts
+
+```python
+"hotkey:command,f"       # Find
+"hotkey:command,l"       # Focus address bar (auto-selects URL!)
+"hotkey:command,r"       # Reload
+"hotkey:command,plus"    # Zoom in (Cmd+=)
+"hotkey:command,minus"   # Zoom out
+"hotkey:command,0"       # Reset zoom
+"hotkey:command,leftbracket"   # Back
+"hotkey:command,rightbracket"  # Forward
+```
+
+### 💡 Real-World Examples
+
+**Example 1: Edit URL (3 actions instead of 10+)**
+```python
+# ❌ SLOW: Click address bar → Triple-click → Type
+# ✅ FAST: Cmd+L auto-selects everything!
+["hotkey:command,l", "type:https://youtube.com", "key:return"]
+```
+
+**Example 2: Replace Text in Field**
+```python
+# ❌ SLOW: Click, select all, type
+# ✅ FAST: Select all + type
+["hotkey:command,a", "type:completely new text"]
+```
+
+**Example 3: Copy Entire Document**
+```python
+# ❌ SLOW: Click top, drag to bottom, copy
+# ✅ FAST: 2 commands!
+["hotkey:command,a", "hotkey:command,c"]
+```
+
+**Example 4: Fix Last Word**
+```python
+# ❌ SLOW: Click, select, delete, retype
+# ✅ FAST: Delete word + type!
+["hotkey:option,backspace", "type:correct_word"]
+```
+
+**Example 5: Go to End and Append**
+```python
+["hotkey:command,right", "type: additional text"]
+```
+
+### 🎓 Efficiency Patterns
+
+| Task | Slow Method | Fast Method | Speed Gain |
+|------|-------------|-------------|------------|
+| Replace 50 chars | 50 backspaces + type | Cmd+A + type | **25x faster** |
+| Delete word | 10 backspaces | Opt+Backspace | **10x faster** |
+| Go to end | Click position | Cmd+Right | **Instant** |
+| Select all | Click & drag | Cmd+A | **20x faster** |
+
+### ⚡ Pro Tips
+
+1. **Always prefer Cmd+A over clicking to select**
+2. **Use Opt+Backspace to delete words, not character by character**
+3. **Cmd+L in browsers auto-selects the entire URL**
+4. **Jump with Cmd/Opt+arrows instead of clicking**
+5. **Add Shift to any movement to select while moving**
 
 ### View System Statistics
 ```bash

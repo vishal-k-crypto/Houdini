@@ -11,8 +11,16 @@ from .loop_state import LoopState, LoopStatus
 from .executor_loop import ExecutorLoop
 from .supervisor_loop import SupervisorLoop
 from ..utils.logging import logger
-from ..utils.gemini_client import GeminiCLI
-from ..planner.gemini_planner import GeminiPlanner
+from ..utils.ollama_client import OllamaClient
+from ..planner.ollama_planner import OllamaPlanner
+from ..supervisor.ollama_supervisor import OllamaSupervisor
+from ..ui.thinking_window import (
+    show_planner_thinking,
+    show_executor_thinking,
+    show_supervisor_thinking,
+    show_thinking,
+    set_window_status
+)
 
 
 class LoopCoordinator:
@@ -20,32 +28,39 @@ class LoopCoordinator:
     Coordinates the ExecutorLoop and SupervisorLoop.
     
     Workflow:
-    1. Plan task using GeminiPlanner
+    1. Plan task using OllamaPlanner with executor history context
     2. Initialize shared LoopState
     3. Start SupervisorLoop in background (optional)
     4. Run ExecutorLoop in main thread
     5. Handle completion and cleanup
+    6. Update executor history via supervisor
     """
     
     def __init__(self, 
-                 cli: GeminiCLI,
-                 planner: GeminiPlanner,
+                 client: OllamaClient,
+                 planner: OllamaPlanner,
+                 supervisor: OllamaSupervisor,
                  enable_supervisor: bool = True,
                  supervisor_mode: str = "background",  # "background" or "checkpoint"
-                 vision_handler: Optional[Callable] = None):
+                 vision_handler: Optional[Callable] = None,
+                 enable_thinking_window: bool = True):
         """
         Args:
-            cli: Gemini client for LLM calls
-            planner: Task planner
+            client: Ollama client for LLM calls
+            planner: Task planner (Ollama-based)
+            supervisor: Task supervisor (Ollama-based) with history tracking
             enable_supervisor: Whether to run supervisor
             supervisor_mode: "background" (parallel) or "checkpoint" (after batches)
             vision_handler: Callback for vision actions
+            enable_thinking_window: Whether to show thinking window
         """
-        self.cli = cli
+        self.client = client
         self.planner = planner
+        self.supervisor = supervisor
         self.enable_supervisor = enable_supervisor
         self.supervisor_mode = supervisor_mode
         self.vision_handler = vision_handler
+        self.enable_thinking_window = enable_thinking_window
         
         # Components (created per-task)
         self.state: Optional[LoopState] = None
@@ -66,20 +81,34 @@ class LoopCoordinator:
         
         logger.info(f"🎯 LoopCoordinator starting task: {task}")
         
+        # Update thinking window
+        if self.enable_thinking_window:
+            set_window_status(f"Planning: {task[:40]}...")
+            show_thinking("system", f"Task received: {task}", "info")
+        
         try:
-            # 1. Generate plan
-            logger.info("📋 Generating execution plan...")
-            batches = self.planner.plan(task)
+            # 1. Get executor history for context
+            executor_history = self.supervisor.get_executor_history() if self.enable_supervisor else None
+            
+            # 2. Generate plan with history context
+            logger.info("📋 Generating execution plan with Ollama Qwen 3 Coder...")
+            if self.enable_thinking_window:
+                show_planner_thinking(f"Analyzing task with executor history: '{task}'")
+            batches = self.planner.plan(task, executor_history=executor_history)
             
             if not batches:
                 logger.error("❌ No batches generated")
                 return {"success": False, "error": "Planning failed"}
             
             logger.info(f"   Plan has {len(batches)} batches")
+            if self.enable_thinking_window:
+                show_planner_thinking(f"Generated {len(batches)} execution batches")
             for i, b in enumerate(batches):
                 btype = b.get("type", "?").upper()
                 desc = b.get("description", "...")[:50]
                 logger.info(f"   {i+1}. [{btype}] {desc}")
+                if self.enable_thinking_window:
+                    show_planner_thinking(f"Batch {i+1}: [{btype}] {desc}")
             
             # 2. Initialize shared state
             self.state = LoopState(
@@ -90,11 +119,12 @@ class LoopCoordinator:
             # 3. Create vision handler wrapper
             vision_callback = self._create_vision_handler()
             
-            # 4. Create loops
+            # 4. Create loops - pass CLI for recovery handling
             self.executor_loop = ExecutorLoop(
                 state=self.state,
                 on_vision_needed=vision_callback,
-                action_delay=0.1
+                action_delay=0.1,
+                cli=self.cli  # Enable recovery with LLM guidance
             )
             
             if self.enable_supervisor:
@@ -111,6 +141,10 @@ class LoopCoordinator:
             logger.info("\n" + "="*50)
             logger.info("🚀 Starting execution loop")
             logger.info("="*50 + "\n")
+            
+            if self.enable_thinking_window:
+                set_window_status("Executing...")
+                show_executor_thinking("Starting execution loop")
             
             result = self.executor_loop.run()
             
@@ -130,6 +164,15 @@ class LoopCoordinator:
             logger.info(f"   Batches: {result['batches_completed']}/{result['batches_total']} completed")
             if result['interventions'] > 0:
                 logger.info(f"   Interventions: {result['interventions']}")
+            
+            # Update thinking window
+            if self.enable_thinking_window:
+                if result["status"] == "completed":
+                    set_window_status("✅ Completed")
+                    show_thinking("system", f"Task completed in {elapsed:.1f}s", "success")
+                else:
+                    set_window_status("❌ Failed")
+                    show_thinking("system", f"Task failed: {result.get('status')}", "error")
             
             return {
                 "success": result["status"] == "completed",
@@ -156,7 +199,8 @@ class LoopCoordinator:
         def default_vision_handler(action_description: str) -> Dict:
             try:
                 from ..agents.vision_executor import execute_vision_action
-                return execute_vision_action(self.cli, action_description, max_attempts=3)
+                # Reduce max_attempts to 1 since we have heuristics now
+                return execute_vision_action(self.cli, action_description, max_attempts=1)
             except Exception as e:
                 logger.error(f"Vision handler error: {e}")
                 return {"success": False, "error": str(e)}
@@ -197,29 +241,37 @@ class LoopCoordinator:
 
 
 def run_with_loop(task: str, 
-                  model: str = "gemini-2.5-pro",
+                  model: str = "qwen2.5-coder:32b",
+                  cloud_endpoint: Optional[str] = None,
                   enable_supervisor: bool = True,
-                  supervisor_mode: str = "background") -> Dict:
+                  supervisor_mode: str = "background",
+                  enable_thinking_window: bool = True) -> Dict:
     """
-    Convenience function to run a task with the loop system.
+    Convenience function to run a task with the loop system using Ollama.
     
     Args:
         task: Natural language task description
-        model: Gemini model to use
+        model: Ollama model to use (default: qwen2.5-coder:32b, or qwen3-coder:480b for cloud)
+        cloud_endpoint: Optional Ollama cloud endpoint URL
         enable_supervisor: Whether to enable supervisor monitoring
         supervisor_mode: "background" or "checkpoint"
+        enable_thinking_window: Whether to show thinking window
     
     Returns:
         Execution result dict
     """
-    cli = GeminiCLI(model_name=model)
-    planner = GeminiPlanner(cli)
+    client = OllamaClient(model_name=model, cloud_endpoint=cloud_endpoint)
+    planner = OllamaPlanner(client)
+    supervisor = OllamaSupervisor(client)
     
     coordinator = LoopCoordinator(
-        cli=cli,
+        client=client,
+        planner=planner,
+        supervisor=supervisor,
         planner=planner,
         enable_supervisor=enable_supervisor,
-        supervisor_mode=supervisor_mode
+        supervisor_mode=supervisor_mode,
+        enable_thinking_window=enable_thinking_window
     )
     
     return coordinator.execute(task)
