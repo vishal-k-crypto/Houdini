@@ -16,7 +16,7 @@ from ..utils.accessibility_reader import (
 from ..utils.gemini_client import GeminiCLI
 
 
-def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts: int = 3) -> Dict:
+def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts: int = 3, context_prompt: Optional[str] = None) -> Dict:
     """
     Execute a vision-based action using accessibility tree analysis.
     The executor analyzes the UI tree and determines where to click autonomously.
@@ -30,6 +30,7 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
         cli: Gemini CLI (only for complex fallback cases)
         action_description: e.g., "click first search result"
         max_attempts: retry count
+        context_prompt: Optional context about previous actions/goals
     
     Returns: {"success": True/False, "error": "...", "method": "..."}
     """
@@ -52,7 +53,7 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
     
     # Strategy 3: LLM-guided fallback (rare)
     logger.warning("  Using LLM-guided fallback...")
-    result = _llm_fallback(cli, action_description, max_attempts)
+    result = _llm_fallback(cli, action_description, max_attempts, context_prompt)
     result["method"] = "llm"
     return result
 
@@ -289,7 +290,7 @@ def _filter_relevant_elements(elements: list, intent: Dict, app_name: str, scree
     return [elem for score, elem in candidates[:5]]  # Top 5 candidates
 
 
-def _llm_fallback(cli: GeminiCLI, action_description: str, max_attempts: int) -> Dict:
+def _llm_fallback(cli: GeminiCLI, action_description: str, max_attempts: int, context_prompt: Optional[str] = None) -> Dict:
     """
     Fallback to LLM when executor cannot determine target.
     This should be rare - executor should handle most cases.
@@ -304,11 +305,16 @@ def _llm_fallback(cli: GeminiCLI, action_description: str, max_attempts: int) ->
             app_info = get_frontmost_app()
             app_name = app_info.get("app", "").lower()
             
+            # Add context if available
+            context_section = ""
+            if context_prompt:
+                context_section = f"\nCONTEXT & HISTORY:\n{context_prompt}\n"
+
             # Build context-aware prompt
             prompt = f"""You are helping navigate a {app_info.get("app", "application")}. Here are the clickable UI elements:
 
 {ui_context}
-
+{context_section}
 Task: {action_description}
 
 IMPORTANT GUIDELINES:

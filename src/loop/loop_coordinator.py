@@ -199,8 +199,19 @@ class LoopCoordinator:
         def default_vision_handler(action_description: str) -> Dict:
             try:
                 from ..agents.vision_executor import execute_vision_action
+
+                # Generate context from current state
+                context_prompt = None
+                if self.state:
+                    context_prompt = self.state.get_context_prompt()
+
                 # Reduce max_attempts to 1 since we have heuristics now
-                return execute_vision_action(self.cli, action_description, max_attempts=1)
+                return execute_vision_action(
+                    self.cli,
+                    action_description,
+                    max_attempts=1,
+                    context_prompt=context_prompt
+                )
             except Exception as e:
                 logger.error(f"Vision handler error: {e}")
                 return {"success": False, "error": str(e)}
