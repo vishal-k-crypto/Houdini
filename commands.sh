@@ -39,6 +39,9 @@ python test_local_vision.py
 # USAGE
 # ============================================================
 
+# Navigate to project directory
+cd ~/Desktop/Houdini/houdini-agent
+
 # Activate environment
 source .venv/bin/activate
 
@@ -193,3 +196,34 @@ killall ollama && ollama serve
 
 # Test setup
 python test_ollama.py
+
+
+# ============================================================
+# PERMISSION CHECK (CRITICAL for macOS)
+# ============================================================
+
+# Run this FIRST if agent is stuck in Terminal or clicking wrong places:
+python test_permissions.py
+
+# The test checks:
+# 1. Accessibility permissions (read UI from other apps)
+# 2. Screen Recording permissions (capture screenshots)
+# 3. Coordinate system (Retina display handling)
+# 4. App focus detection (can detect when new app opens)
+
+# MANUAL FIX if permissions test fails:
+# 1. Open System Settings > Privacy & Security > Accessibility
+#    - Add Terminal (or iTerm/VS Code) and ENABLE the toggle
+#
+# 2. Open System Settings > Privacy & Security > Screen Recording
+#    - Add Terminal (or iTerm/VS Code) and ENABLE the toggle
+#
+# 3. RESTART your terminal after granting permissions!
+
+# Verify permissions are working:
+python -c "
+from ApplicationServices import AXUIElementCreateSystemWide
+from Cocoa import NSWorkspace
+app = NSWorkspace.sharedWorkspace().frontmostApplication()
+print(f'Frontmost: {app.localizedName()}')
+"
