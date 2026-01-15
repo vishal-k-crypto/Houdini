@@ -116,6 +116,10 @@ class MacroStep(BaseModel):
     step: str = Field(..., description="High-level description of what to do")
     context: str = Field("", description="Expected state after this step")
     potential_issues: Optional[str] = Field(None, description="What could go wrong")
+    suggested_actions: Optional[List[str]] = Field(
+        None, 
+        description="Concrete action patterns like 'hotkey:command,space', 'type:Safari', 'key:return'"
+    )
 
 
 class MacroPlanResponse(BaseModel):

@@ -106,7 +106,23 @@ class AccessibilityAPI:
         self._cache_ttl = 2.0  # Cache valid for 2 seconds
         
     def _get_screen_height(self) -> int:
-        """Get main display height for coordinate conversion."""
+        """
+        Get main display height for coordinate conversion.
+        
+        Uses NSScreen for logical resolution (matches PyAutoGUI).
+        Falls back to CGDisplayBounds if needed.
+        """
+        try:
+            # Use NSScreen for logical resolution (matches PyAutoGUI)
+            screen = AppKit.NSScreen.mainScreen()
+            if screen:
+                frame = screen.frame()
+                height = int(frame.size.height)
+                logger.debug(f"AccessibilityAPI screen height: {height} (from NSScreen)")
+                return height
+        except Exception as e:
+            logger.debug(f"NSScreen failed: {e}")
+        
         try:
             display_bounds = CGDisplayBounds(CGMainDisplayID())
             return int(display_bounds.size.height)
@@ -115,13 +131,16 @@ class AccessibilityAPI:
     
     def _convert_coords_to_screen(self, macos_x: float, macos_y: float) -> Tuple[int, int]:
         """
-        Convert macOS coordinates (bottom-left origin) to screen (top-left origin).
+        Convert macOS AXPosition coordinates to screen coordinates.
         
-        macOS: (0, 0) = bottom-left, y increases upward
-        Screen: (0, 0) = top-left, y increases downward
+        IMPORTANT: AXPosition values from Accessibility API are already in
+        screen coordinates with (0,0) at TOP-LEFT corner. No conversion needed.
+        
+        The common misconception is that macOS uses bottom-left origin, but
+        that's only for Quartz/Core Graphics drawing, NOT for Accessibility API.
         """
-        screen_y = self._screen_height - int(macos_y)
-        return (int(macos_x), screen_y)
+        # AXPosition is already in screen coords (top-left origin)
+        return (int(macos_x), int(macos_y))
     
     def _get_attribute(self, element: Any, attribute: str) -> Optional[Any]:
         """Safely get an attribute from an AXUIElement."""
@@ -152,18 +171,35 @@ class AccessibilityAPI:
             
             description = self._get_attribute(ax_ref, "AXDescription") or ""
             
-            # Get position and size
+            # Get position and size (with robust error handling)
             position = None
             size = None
-            ax_position = self._get_attribute(ax_ref, "AXPosition")
-            ax_size = self._get_attribute(ax_ref, "AXSize")
-            
-            if ax_position and ax_size:
-                # Convert from CGPoint to tuple and convert coordinates
-                macos_x = ax_position.x
-                macos_y = ax_position.y
-                position = self._convert_coords_to_screen(macos_x, macos_y)
-                size = (int(ax_size.width), int(ax_size.height))
+            try:
+                ax_position = self._get_attribute(ax_ref, "AXPosition")
+                ax_size = self._get_attribute(ax_ref, "AXSize")
+                
+                if ax_position and ax_size:
+                    # Handle different position representations
+                    if hasattr(ax_position, 'x'):
+                        macos_x = ax_position.x
+                        macos_y = ax_position.y
+                    elif isinstance(ax_position, (tuple, list)) and len(ax_position) >= 2:
+                        macos_x, macos_y = ax_position[0], ax_position[1]
+                    else:
+                        # Skip position if format is unknown
+                        macos_x, macos_y = None, None
+                    
+                    if macos_x is not None and macos_y is not None:
+                        position = self._convert_coords_to_screen(macos_x, macos_y)
+                    
+                    # Handle different size representations
+                    if hasattr(ax_size, 'width'):
+                        size = (int(ax_size.width), int(ax_size.height))
+                    elif isinstance(ax_size, (tuple, list)) and len(ax_size) >= 2:
+                        size = (int(ax_size[0]), int(ax_size[1]))
+            except Exception as e:
+                # Position/size extraction failed, but element can still be useful
+                logger.debug(f"Position/size extraction failed: {e}")
             
             # Get state
             enabled = self._get_attribute(ax_ref, "AXEnabled")
@@ -203,6 +239,23 @@ class AccessibilityAPI:
                         child = self._element_to_axelement(child_ref, include_children=True, max_depth=max_depth, current_depth=current_depth+1)
                         if child:
                             element.children.append(child)
+                
+                # For AXApplication, also get menu bar and windows (not in AXChildren)
+                if role == "AXApplication":
+                    # Get menu bar (main menu bar, skip extras menu bar)
+                    menubar_ref = self._get_attribute(ax_ref, "AXMenuBar")
+                    if menubar_ref:
+                        menubar = self._element_to_axelement(menubar_ref, include_children=True, max_depth=max_depth, current_depth=current_depth+1)
+                        if menubar:
+                            element.children.append(menubar)
+                    
+                    # Get windows
+                    windows_refs = self._get_attribute(ax_ref, "AXWindows")
+                    if windows_refs:
+                        for win_ref in windows_refs[:20]:
+                            win = self._element_to_axelement(win_ref, include_children=True, max_depth=max_depth, current_depth=current_depth+1)
+                            if win:
+                                element.children.append(win)
             
             return element
             
@@ -228,12 +281,12 @@ class AccessibilityAPI:
             logger.error(f"Failed to get frontmost app: {e}")
             return None
     
-    def get_ui_tree(self, max_depth: int = 5, use_cache: bool = True) -> Optional[AXElement]:
+    def get_ui_tree(self, max_depth: int = 8, use_cache: bool = True) -> Optional[AXElement]:
         """
         Get the full UI element tree for the frontmost application.
         
         Args:
-            max_depth: Maximum depth to traverse
+            max_depth: Maximum depth to traverse (8 for complex apps like Chrome)
             use_cache: Whether to use cached tree
             
         Returns:
@@ -430,6 +483,172 @@ class AccessibilityAPI:
         except Exception as e:
             logger.error(f"Failed to get app info: {e}")
             return {"app": "Unknown", "window": ""}
+    
+    def get_running_apps(self) -> List[Dict]:
+        """
+        Get list of all running applications with their PIDs.
+        
+        Returns:
+            List of dicts with 'name', 'bundle_id', 'pid', 'is_active'
+        """
+        try:
+            workspace = NSWorkspace.sharedWorkspace()
+            frontmost = workspace.frontmostApplication()
+            frontmost_pid = frontmost.processIdentifier() if frontmost else -1
+            
+            apps = []
+            for app in workspace.runningApplications():
+                # Skip background-only apps
+                if app.activationPolicy() != 0:  # NSApplicationActivationPolicyRegular = 0
+                    continue
+                    
+                apps.append({
+                    "name": app.localizedName() or "Unknown",
+                    "bundle_id": app.bundleIdentifier() or "",
+                    "pid": app.processIdentifier(),
+                    "is_active": app.processIdentifier() == frontmost_pid
+                })
+            
+            return apps
+            
+        except Exception as e:
+            logger.error(f"Failed to get running apps: {e}")
+            return []
+    
+    def get_app_by_name(self, app_name: str) -> Optional[Dict]:
+        """
+        Find a running app by name (case-insensitive partial match).
+        
+        Returns:
+            Dict with app info or None if not found
+        """
+        apps = self.get_running_apps()
+        app_name_lower = app_name.lower()
+        
+        # First try exact match
+        for app in apps:
+            if app["name"].lower() == app_name_lower:
+                return app
+        
+        # Then try partial match
+        for app in apps:
+            if app_name_lower in app["name"].lower():
+                return app
+        
+        return None
+    
+    def get_ui_tree_for_app(self, app_name: str, max_depth: int = 8) -> Optional[AXElement]:
+        """
+        Get UI element tree for a SPECIFIC application by name.
+        
+        This is the KEY method for fixing the "terminal only" issue.
+        Instead of getting elements from frontmost app, this gets
+        elements from any running app.
+        
+        Args:
+            app_name: Name of the app (e.g., "Safari", "Chrome")
+            max_depth: Maximum depth to traverse
+            
+        Returns:
+            Root AXElement with children populated, or None if app not found
+        """
+        app_info = self.get_app_by_name(app_name)
+        if not app_info:
+            logger.warning(f"App '{app_name}' not found in running applications")
+            return None
+        
+        try:
+            ax_app = AXUIElementCreateApplication(app_info["pid"])
+            tree = self._element_to_axelement(ax_app, include_children=True, max_depth=max_depth)
+            logger.debug(f"Got UI tree for {app_info['name']} (PID {app_info['pid']})")
+            return tree
+            
+        except Exception as e:
+            logger.error(f"Failed to get UI tree for {app_name}: {e}")
+            return None
+    
+    def find_element_in_app(self, app_name: str, text: str) -> Optional[AXElement]:
+        """
+        Find element by text in a SPECIFIC application (not just frontmost).
+        
+        Args:
+            app_name: Name of the app to search in
+            text: Text to search for
+            
+        Returns:
+            First matching AXElement or None
+        """
+        tree = self.get_ui_tree_for_app(app_name)
+        if not tree:
+            return None
+        
+        results = []
+        self._traverse_elements(tree, results, text_filter=text)
+        return results[0] if results else None
+    
+    def get_all_visible_elements(self, max_apps: int = 10) -> List[AXElement]:
+        """
+        Get UI elements from ALL visible applications.
+        
+        This provides a complete picture of the screen, not just
+        the frontmost app. Useful for finding elements to click
+        anywhere on the desktop.
+        
+        Args:
+            max_apps: Maximum number of apps to query (to prevent slowness)
+            
+        Returns:
+            List of all elements across all visible apps
+        """
+        all_elements = []
+        apps = self.get_running_apps()[:max_apps]
+        
+        for app_info in apps:
+            try:
+                ax_app = AXUIElementCreateApplication(app_info["pid"])
+                tree = self._element_to_axelement(ax_app, include_children=True, max_depth=5)
+                if tree:
+                    # Collect all elements from this app's tree
+                    results = []
+                    self._traverse_elements(tree, results)
+                    all_elements.extend(results)
+            except Exception as e:
+                logger.debug(f"Skipping {app_info['name']}: {e}")
+        
+        logger.debug(f"Found {len(all_elements)} elements across {len(apps)} apps")
+        return all_elements
+    
+    def find_element_anywhere(self, text: str) -> Optional[AXElement]:
+        """
+        Find element by text across ALL running applications.
+        
+        This searches the entire desktop, not just the frontmost app.
+        Use this when you need to click something that might not be
+        in the current app.
+        
+        Args:
+            text: Text to search for
+            
+        Returns:
+            First matching AXElement or None
+        """
+        apps = self.get_running_apps()
+        text_lower = text.lower()
+        
+        for app_info in apps:
+            try:
+                ax_app = AXUIElementCreateApplication(app_info["pid"])
+                tree = self._element_to_axelement(ax_app, include_children=True, max_depth=6)
+                if tree:
+                    results = []
+                    self._traverse_elements(tree, results, text_filter=text)
+                    if results:
+                        logger.info(f"Found '{text}' in {app_info['name']}")
+                        return results[0]
+            except Exception as e:
+                logger.debug(f"Skipping {app_info['name']}: {e}")
+        
+        return None
 
 
 # Convenience functions for backward compatibility
@@ -443,6 +662,24 @@ def find_element_by_text(text: str) -> Optional[AXElement]:
     """Find element by text content."""
     api = AccessibilityAPI()
     return api.find_element_by_text(text)
+
+
+def find_element_anywhere(text: str) -> Optional[AXElement]:
+    """Find element by text across ALL running applications."""
+    api = AccessibilityAPI()
+    return api.find_element_anywhere(text)
+
+
+def find_element_in_app(app_name: str, text: str) -> Optional[AXElement]:
+    """Find element by text in a specific application."""
+    api = AccessibilityAPI()
+    return api.find_element_in_app(app_name, text)
+
+
+def get_ui_tree_for_app(app_name: str) -> Optional[AXElement]:
+    """Get UI tree for a specific application by name."""
+    api = AccessibilityAPI()
+    return api.get_ui_tree_for_app(app_name)
 
 
 def perform_element_action(element: AXElement, action: str = "AXPress") -> bool:
