@@ -20,11 +20,11 @@ from PIL import Image
 from ..utils.logging import logger
 
 try:
-    import google.generativeai as genai
+    from google import genai
     GENAI_AVAILABLE = True
 except ImportError:
     GENAI_AVAILABLE = False
-    logger.error("google-generativeai not available")
+    logger.error("google-genai not available")
 
 
 @dataclass
@@ -75,7 +75,7 @@ class VLMScreenParser:
     
     def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.0-flash-exp"):
         if not GENAI_AVAILABLE:
-            raise RuntimeError("google-generativeai not available. Install: pip install google-generativeai")
+            raise RuntimeError("google-genai not available. Install: pip install google-genai")
         
         # Import existing gemini_client for API key
         try:

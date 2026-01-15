@@ -14,6 +14,13 @@ from ..utils.choice_tracker import choice_tracker
 from ..utils.action_optimizer import action_optimizer
 from ..ui.thinking_window import show_planner_thinking, show_thinking
 
+# Import context memory for resolving ambiguous references
+try:
+    from ..utils.context_memory import get_planner_context, resolve_task_context
+    CONTEXT_MEMORY_AVAILABLE = True
+except ImportError:
+    CONTEXT_MEMORY_AVAILABLE = False
+
 TASK_HISTORY_FILE = Path(__file__).parent.parent.parent / "data" / "task_history.json"
 
 PLANNING_RULES = """
@@ -153,6 +160,16 @@ class OllamaPlanner:
         pattern_hints = self._get_pattern_hints(similar_patterns)
         history_context = self._format_executor_history(executor_history)
         
+        # NEW: Get context memory for resolving ambiguous references
+        context_memory_hints = ""
+        if CONTEXT_MEMORY_AVAILABLE:
+            try:
+                context_memory_hints = get_planner_context(task)
+                if context_memory_hints:
+                    logger.debug(f"📁 Context memory provided hints for task")
+            except Exception as e:
+                logger.debug(f"Context memory lookup failed: {e}")
+        
         # Load evolved system prompt
         system_prompt = get_planner_prompt()
         
@@ -163,6 +180,8 @@ class OllamaPlanner:
 {history_context}
 
 {pattern_hints}
+
+{context_memory_hints}
 
 ## Output Format
 Return a JSON object with this structure:
@@ -198,14 +217,8 @@ Generate the plan now:
             
             batches = response["batches"]
             
-            # Optimize actions
-            batches = self.action_optimizer.optimize_plan(batches)
-            
             # Cache the plan
             self.memory.remember(task, {"batches": batches})
-            
-            # Track this choice
-            choice_tracker.add_choice(task, {"plan": batches})
             
             logger.info(f"✅ Generated plan with {len(batches)} batches")
             return batches
@@ -243,9 +256,11 @@ Generate the plan now:
             return ""
         
         hints = "\n## Similar Task Patterns Found\n"
-        for pattern in similar_patterns[:3]:  # Top 3
+        for item in similar_patterns[:3]:  # Top 3
+            # similar_patterns is a list of (pattern, similarity_score) tuples
+            pattern, score = item
             hints += f"- Pattern: {pattern.task_template} (confidence: {pattern.confidence:.0%})\n"
-            hints += f"  Average time: {pattern.avg_execution_time:.1f}s\n"
+            hints += f"  Average time: {pattern.avg_duration:.1f}s\n"
         
         return hints
     

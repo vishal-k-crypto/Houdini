@@ -14,12 +14,12 @@ class OllamaClient:
     Replaces Gemini for all agent operations.
     """
     
-    def __init__(self, model_name: str = "qwen2.5-coder:32b", cloud_endpoint: Optional[str] = None):
+    def __init__(self, model_name: str = "qwen3-coder:480b-cloud", cloud_endpoint: Optional[str] = None):
         """
         Initialize Ollama client.
         
         Args:
-            model_name: Model to use (default: qwen2.5-coder:32b, use qwen3-coder:480b when available)
+            model_name: Model to use (default: qwen3-coder:480b-cloud for cloud 480B)
             cloud_endpoint: Optional cloud endpoint URL (for Ollama Cloud)
         """
         self.model_name = model_name

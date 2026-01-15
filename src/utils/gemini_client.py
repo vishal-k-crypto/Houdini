@@ -12,11 +12,7 @@ try:
     from google import genai
     GENAI_AVAILABLE = True
 except ImportError:
-    try:
-        import google.generativeai as genai_old
-        GENAI_AVAILABLE = "old"
-    except ImportError:
-        GENAI_AVAILABLE = False
+    GENAI_AVAILABLE = False
 
 # Import for image handling
 try:
@@ -61,7 +57,7 @@ class GeminiCLI:
             model: Optional model override (e.g., "gemini-2.0-flash-exp")
         """
         # Note: Gemini CLI doesn't support image input
-        # For vision grounding, consider using google-genai Python package instead
+        # For vision grounding, use google-genai Python package instead
         if image_path:
             logger.warning("Gemini CLI does not support image input. Ignoring image.")
         
@@ -115,7 +111,7 @@ class GeminiCLI:
 class GeminiVision:
     """
     Gemini Vision API wrapper for image understanding.
-    Uses google-generativeai SDK for vision models.
+    Uses google-genai SDK for vision models.
     """
     
     def __init__(self, model_name: str = "gemini-2.0-flash-exp", api_key: Optional[str] = None):
@@ -127,7 +123,7 @@ class GeminiVision:
             api_key: Optional API key (reads from env if not provided)
         """
         if not GENAI_AVAILABLE:
-            raise RuntimeError("google-generativeai not available. Install: pip install google-generativeai")
+            raise RuntimeError("google-genai not available. Install: pip install google-genai")
         
         if not PIL_AVAILABLE:
             raise RuntimeError("PIL not available. Install: pip install pillow")
@@ -136,18 +132,12 @@ class GeminiVision:
         
         # Configure API
         if api_key:
-            if GENAI_AVAILABLE == "old":
-                genai_old.configure(api_key=api_key)
-            else:
-                genai.configure(api_key=api_key)
+            genai.configure(api_key=api_key)
         else:
             # Try to get from environment
             api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
             if api_key:
-                if GENAI_AVAILABLE == "old":
-                    genai_old.configure(api_key=api_key)
-                else:
-                    genai.configure(api_key=api_key)
+                genai.configure(api_key=api_key)
         
         logger.info(f"Initialized Gemini Vision with model: {model_name}")
     
@@ -171,10 +161,7 @@ class GeminiVision:
                 pil_image = Image.open(io.BytesIO(image_bytes))
                 
                 # Create model
-                if GENAI_AVAILABLE == "old":
-                    model = genai_old.GenerativeModel(self.model_name)
-                else:
-                    model = genai.GenerativeModel(self.model_name)
+                model = genai.GenerativeModel(self.model_name)
                 
                 # Generate with image
                 response = model.generate_content([prompt, pil_image])
