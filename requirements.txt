@@ -53,15 +53,24 @@ langchain-core>=0.3.0
 # Provides: rich text, interactive widgets, CSS-like styling
 textual>=0.45.0
 
-# OmniParser V2 - Enhanced UI element detection (OPTIONAL)
-# Superior parsing for non-accessible apps: Adobe, Electron, Qt, games
-# Requires CUDA for optimal performance (~0.8s/frame on RTX 4090)
-# CPU mode is slower (~5-10s/frame) but still functional
-# NOTE: These are heavy dependencies (~2GB models). Lazy-loaded only when needed.
-# To enable: pip install torch ultralytics transformers huggingface-hub easyocr supervision
-# torch>=2.0.0
-# ultralytics>=8.3.70  # YOLOv8 for icon detection
-# transformers>=4.30.0  # Florence-2 for captioning  
-# huggingface-hub>=0.20.0  # Model downloads
-# easyocr>=1.7.0  # OCR text extraction
-# supervision>=0.18.0  # Bounding box utilities
+# ============================================================
+# LOCAL VISION LOCALIZER - Hybrid Apple Vision + UI-TARS MLX
+# ============================================================
+# Precise pixel localization using native macOS frameworks + local MLX models
+# Benefits:
+# - Hardware-accelerated on Apple Silicon Neural Engine
+# - Sub-millisecond detection for standard UI shapes
+# - No cloud latency - runs entirely on-device
+# - Semantic precision for niche tools (Adobe, Electron apps)
+
+# Apple Vision Framework (included in pyobjc packages above)
+# Already have: pyobjc-framework-Quartz, pyobjc-framework-Cocoa
+# Add Vision framework support:
+pyobjc-framework-Vision>=10.0
+
+# MLX-VLM for UI-TARS (Apple Silicon optimized) - OPTIONAL
+# Semantic grounding for complex/non-accessible UI elements
+# To enable: pip install mlx-vlm
+# This will install MLX and optimized vision-language models
+# Recommended model: mlx-community/UI-TARS-7B-SFT-4bit (~4GB)
+# mlx-vlm>=0.1.0

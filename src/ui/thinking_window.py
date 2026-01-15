@@ -273,8 +273,8 @@ if TEXTUAL_AVAILABLE:
             self.log_widget = self.query_one("#thinking-log", ThinkingLog)
             self.status_widget = self.query_one("#status-bar", StatusBar)
             
-            # Start the message processing loop
-            self.set_interval(0.1, self.process_messages)
+            # Start the message processing loop - 50ms for faster updates
+            self.set_interval(0.05, self.process_messages)
             
             # Initial message
             self.log_widget.add_message(

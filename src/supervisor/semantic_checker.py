@@ -260,16 +260,29 @@ def extract_expected_context(step_description: str, step_context: str = "") -> D
     }
     
     # Extract domain hints (e.g., "google.com", "youtube.com")
-    # First try with action verbs
-    domain_match = re.search(r'(?:go\s+to|visit|navigate\s+to|open)\s+(\w+\.(?:com|org|net|io|dev|ai|co))', combined)
+    # Pattern with action verbs - supports full URLs with protocols
+    # Examples: "go to youtube.com", "navigate to https://www.google.com", "open http://github.io"
+    domain_match = re.search(
+        r'(?:go\s+to|visit|navigate\s+to|open)\s+(?:https?://)?(?:www\.)?'
+        r'([\w\-]+\.(?:com|org|net|io|dev|ai|co|edu|gov)(?:/\S*)?)',
+        combined
+    )
     if domain_match:
-        result["domain"] = domain_match.group(1)
+        # Extract just the domain part (strip path if present)
+        full_match = domain_match.group(1)
+        result["domain"] = full_match.split('/')[0]  # Get domain without path
+        # Domain with action verb implies browser navigation
+        if not result["app"]:
+            result["app"] = "safari"  # Default browser assumption for URLs
     
     # FALLBACK: Handle raw URLs without action verbs (e.g., "https://www.youtube.com")
-    # This fixes tasks like just pasting a URL
+    # This fixes tasks like just pasting/typing a URL directly
     if not result["domain"]:
         # Match URLs with optional protocol and www prefix
-        raw_url_match = re.search(r'(?:https?://)?(?:www\.)?([\w\-]+\.(?:com|org|net|io|dev|ai|co))', combined)
+        raw_url_match = re.search(
+            r'(?:https?://)?(?:www\.)?([\w\-]+\.(?:com|org|net|io|dev|ai|co|edu|gov))',
+            combined
+        )
         if raw_url_match:
             result["domain"] = raw_url_match.group(1)
             # Raw URLs imply browser navigation - set app to browser if not already set

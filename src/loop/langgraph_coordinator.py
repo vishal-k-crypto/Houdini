@@ -426,13 +426,19 @@ Generate the macro plan:"""
         step_desc = current_step.get("step", "Unknown")
         
         logger.info(f"▶️ Executing step {current_idx + 1}/{len(macro_steps)}: {step_desc}")
-        self._show("executor", f"Processing: {step_desc}", "executing")
+        self._show("executor", f"━━━ Step {current_idx + 1}: {step_desc} ━━━", "executing")
         
         # Capture screen context
         screen_context = self._capture_screen_context()
         
+        # Show current context
+        self._show("executor", f"📍 Current: {screen_context.get('app_name', 'Unknown')} | {screen_context.get('window_title', '')[:40]}", "info")
+        
         # Generate micro actions
         elements_summary = self._summarize_elements(screen_context.get("visible_elements", [])[:20])
+        
+        # Show thinking indicator before LLM call
+        self._show("executor", "⏳ Planning actions...", "thinking")
         
         prompt = f"""You are a MICRO EXECUTOR. Generate specific cursor/keyboard actions.
 
@@ -481,6 +487,10 @@ Generate micro actions:"""
                     "phase": AgentPhase.SUPERVISOR_GUIDE.value,
                 }
             
+            # Show action plan summary
+            action_types = [a.get("type", "?") for a in actions]
+            self._show("executor", f"✓ Plan ready: {len(actions)} actions ({', '.join(action_types[:3])}{'...' if len(action_types) > 3 else ''})", "success")
+            
             # Execute actions
             executed = []
             success = True
@@ -488,12 +498,17 @@ Generate micro actions:"""
             action_start_time = None
             pending_outcomes = []  # DELAYED REWARD: Store outcomes until verification
             
-            for action in actions:
+            total_actions = len(actions)
+            for action_idx, action in enumerate(actions, 1):
                 action_type = action.get("type", "")
                 params = action.get("params", {})
                 description = action.get("description", "")
                 rating = None  # Track confidence rating for outcome recording
                 action_start_time = time.time()
+                
+                # Show what we're about to do FIRST
+                action_label = f"[{action_idx}/{total_actions}] {action_type}: {description}"
+                self._show("executor", f"▶ {action_label}", "action")
                 
                 try:
                     # ========== CONFIDENCE GATING ==========
@@ -510,7 +525,6 @@ Generate micro actions:"""
                         )
                         
                         logger.info(f"📊 Action confidence: {rating.score:.1f}/10 ({rating.level.value})")
-                        self._show("executor", f"Confidence: {rating.score:.1f}/10", "info")
                         
                         # Defer to supervisor if confidence too low
                         if rating.score < 3.0:
@@ -560,6 +574,8 @@ Generate micro actions:"""
                             raise Exception(click_result.get("error", "Click failed"))
                         self._smart_wait_after("click")
                     
+                    duration_ms = (time.time() - action_start_time) * 1000
+                    
                     executed.append(ActionRecord(
                         type=action_type,
                         params=params,
@@ -568,6 +584,9 @@ Generate micro actions:"""
                         success=True,
                         error=None,
                     ))
+                    
+                    # Show completion in thinking window
+                    self._show("executor", f"✓ Done ({duration_ms:.0f}ms)", "success")
                     
                     # DELAYED REWARD: Store pending outcome for later commitment
                     # Don't record outcome yet - wait for Verifier to confirm macro-step success
