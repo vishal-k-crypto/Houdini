@@ -782,6 +782,17 @@ Generate micro actions:"""
         import pyautogui
         from ..utils.accessibility_reader import get_frontmost_app
         
+        # Verify pyautogui is working
+        try:
+            # Test if we can get mouse position (requires accessibility permissions)
+            pos = pyautogui.position()
+            logger.debug(f"PyAutoGUI initialized, cursor at: {pos}")
+        except Exception as e:
+            logger.error(f"❌ PyAutoGUI not working: {e}")
+            logger.error("Please grant accessibility permissions to Terminal/iTerm in System Settings > Privacy & Security > Accessibility")
+            self._show("executor", "❌ Accessibility permissions required!", "error")
+            return False
+        
         # Track expected app context for verification
         expected_app = None
         last_activated_app = None
@@ -829,13 +840,18 @@ Generate micro actions:"""
                 if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
                     self._replay_logger.log_action(action.description, action.action_type)
                 
+                # DEBUG: Log that we're about to execute
+                logger.debug(f"Executing action type: {action.action_type} with params: {action.params}")
+                
                 if action.action_type == "hotkey":
                     keys = action.params.get("keys", [])
+                    logger.debug(f"Pressing hotkey: {keys}")
                     
                     # Special handling for app-launching hotkeys (like Cmd+Space for Spotlight)
                     is_spotlight = keys == ["command", "space"] or keys == ["cmd", "space"]
                     
                     pyautogui.hotkey(*keys)
+                    logger.debug(f"Hotkey pressed: {keys}")
                     self._smart_wait_after("hotkey")
                     
                     # After spotlight, expect to type app name next
@@ -848,6 +864,7 @@ Generate micro actions:"""
                     
                 elif action.action_type == "type":
                     text = action.params.get("text", "")
+                    logger.debug(f"Typing text: {text}")
                     
                     # CRITICAL: Verify we're typing in the right place before sending keystrokes
                     current_app = get_frontmost_app()
