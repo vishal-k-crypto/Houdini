@@ -74,3 +74,22 @@ pyobjc-framework-Vision>=10.0
 # This will install MLX and optimized vision-language models
 # Recommended model: mlx-community/UI-TARS-7B-SFT-4bit (~4GB)
 # mlx-vlm>=0.1.0
+
+# ============================================================
+# OMNIPARSER V2 - YOLO + Florence-2 Vision
+# ============================================================
+# Microsoft OmniParser V2 for high-accuracy UI element detection
+# Benefits:
+# - YOLOv8-based detection: fast, precise bounding boxes
+# - Florence-2 captioning: semantic understanding of icons/buttons
+# - 60% latency reduction vs V1
+# - Improves GPT-4V action accuracy: 70% → 93%
+# - MPS (Metal) acceleration on Apple Silicon
+
+# Core OmniParser dependencies
+ultralytics>=8.0.0        # YOLOv8 for icon detection
+
+# Optional: Florence-2 for semantic captioning
+# Increases accuracy but adds ~2GB model download
+# transformers>=4.36.0    # Florence-2 captioning
+
