@@ -9,7 +9,18 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from ..utils.logging import logger
+from .logging import logger
+
+# Lazy import to avoid circular dependency
+_lesson_store = None
+
+def _get_lesson_store():
+    """Get the lesson store instance (lazy loading to avoid circular imports)."""
+    global _lesson_store
+    if _lesson_store is None:
+        from .lesson_store import lesson_store
+        _lesson_store = lesson_store
+    return _lesson_store
 
 PROMPTS_DIR = Path(__file__).parent.parent.parent / "prompts"
 EVOLUTION_LOG = Path(__file__).parent.parent.parent / "data" / "prompt_evolution_log.json"
@@ -240,53 +251,96 @@ class PromptEvolution:
         """
         Evolve a component's prompt based on failure analysis.
         
+        NEW: Instead of appending markdown to prompt files (causing context bloat),
+        we now store failures as lessons in the LessonStore vector database.
+        These are retrieved via RAG when needed, keeping prompts lean.
+        
         Args:
             component: "planner", "executor", or "supervisor"
             recent_failures: List of recent failure feedback entries
         """
-        # Analyze failures
+        # Get lesson store
+        lesson_store = _get_lesson_store()
+        
+        # Analyze failures for insights
         analysis = self.analyze_failures(component, recent_failures)
         
-        # Generate improvement
-        improvement = self.generate_prompt_improvement(component, analysis)
-        
-        if not improvement:
-            logger.info(f"No prompt evolution needed for {component}")
+        if not analysis.get("patterns"):
+            logger.info(f"No patterns detected for {component}")
             return
         
-        # Load current prompt
-        prompt_file = self.prompts_dir / f"{component}_prompt.md"
-        if not prompt_file.exists():
-            logger.error(f"Prompt file not found: {prompt_file}")
-            return
+        # Store each failure as a lesson in the vector database
+        lessons_added = 0
+        for failure in recent_failures:
+            error_type = failure.get("error_type", "unknown")
+            error_details = failure.get("error_details", "")
+            task = failure.get("task", "")
+            suggestion = failure.get("suggestion")
+            
+            # Generate solution based on patterns detected
+            if not suggestion:
+                suggestion = self._generate_solution_from_analysis(component, analysis, error_type)
+            
+            # Record in lesson store
+            lesson = lesson_store.record_failure(
+                component=component,
+                task=task,
+                error_type=error_type,
+                error_details=error_details,
+                suggestion=suggestion
+            )
+            
+            if lesson:
+                lessons_added += 1
         
-        try:
-            with open(prompt_file, 'r') as f:
-                current_prompt = f.read()
-            
-            # Append improvement (preserves existing evolutions)
-            evolved_prompt = current_prompt + improvement
-            
-            # Save evolved prompt
-            with open(prompt_file, 'w') as f:
-                f.write(evolved_prompt)
-            
-            # Record evolution
-            evolution_entry = {
-                "timestamp": datetime.now().isoformat(),
-                "component": component,
-                "analysis": analysis,
-                "improvement": improvement,
-                "failure_count": len(recent_failures)
-            }
-            self.evolution_history.append(evolution_entry)
-            self._save_evolution_history()
-            
-            logger.info(f"✨ Evolved {component} prompt based on {len(recent_failures)} failures")
-            logger.info(f"📝 New insights added to {prompt_file.name}")
-            
-        except Exception as e:
-            logger.error(f"Failed to evolve prompt: {e}")
+        # Record evolution in history
+        evolution_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "component": component,
+            "analysis": analysis,
+            "lessons_added": lessons_added,
+            "failure_count": len(recent_failures),
+            "method": "lesson_store"  # New field to indicate RAG-based storage
+        }
+        self.evolution_history.append(evolution_entry)
+        self._save_evolution_history()
+        
+        logger.info(f"✨ Stored {lessons_added} lessons for {component} in vector DB")
+        logger.info(f"📚 Lessons will be retrieved via RAG when similar tasks are planned")
+    
+    def _generate_solution_from_analysis(
+        self, 
+        component: str, 
+        analysis: Dict, 
+        error_type: str
+    ) -> str:
+        """
+        Generate a solution suggestion based on failure analysis patterns.
+        """
+        patterns = analysis.get("patterns", [])
+        solutions = []
+        
+        if "frequent_element_not_found" in patterns and error_type == "element_not_found":
+            if component == "planner":
+                solutions.append("Add more wait time before vision actions")
+                solutions.append("Use more specific element descriptions")
+            elif component == "executor":
+                solutions.append("Retry element lookup with broader search criteria")
+                solutions.append("Wait for page/UI stabilization")
+        
+        if "timing_issues" in patterns and error_type in ("timeout", "timing"):
+            if component == "planner":
+                solutions.append("Increase default wait times by 50%")
+                solutions.append("Add explicit wait steps after state changes")
+            elif component == "executor":
+                solutions.append("Implement adaptive wait times")
+                solutions.append("Poll for element availability instead of fixed waits")
+        
+        if "action_format_issues" in patterns:
+            solutions.append("Strictly follow action format specifications")
+            solutions.append("Validate action format before execution")
+        
+        return "; ".join(solutions) if solutions else f"Investigate and handle: {error_type}"
     
     def get_prompt_version(self, component: str) -> int:
         """Get the current version number of a component's prompt."""

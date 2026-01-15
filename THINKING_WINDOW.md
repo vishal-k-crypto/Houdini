@@ -1,33 +1,45 @@
 # 💭 Thinking Window - Real-time AI Reasoning Display
 
-The Thinking Window is a floating, always-on-top window that displays the real-time thinking process of the Houdini agent's AI components (Planner, Executor, and Supervisor).
+The Thinking Window is a beautiful terminal UI (TUI) that displays the real-time thinking process of the Houdini agent's AI components (Planner, Executor, and Supervisor).
 
 ## ✨ Features
 
 - **Real-time Updates**: See what the AI is thinking as it plans and executes tasks
 - **Component Tracking**: Separate visual styling for Planner, Executor, and Supervisor thoughts
-- **macOS-style Design**: Clean, modern interface inspired by ChatGPT Mac app
-- **Always on Top**: Window stays visible above other applications
-- **Draggable**: Click and drag the header to reposition
-- **Collapsible**: Minimize to a compact header bar when not needed
+- **Hacker Aesthetic**: Beautiful terminal dashboard with cyber/matrix color scheme
+- **Rich Text Formatting**: Uses Textual + Rich for gorgeous terminal output
+- **Interactive Controls**: Keyboard shortcuts for clearing, quitting, and more
 - **Status Indicator**: Live status with colored indicators (🟢 Running, ✅ Complete, 🔴 Error)
 
 ## 🎨 Visual Components
 
-### Component Colors
-- **🧠 Thinking** - Light Blue: General reasoning and analysis
-- **📋 Planner** - Teal: Task analysis and batch generation
-- **⚡ Executor** - Orange: Action execution and progress
-- **👁 Supervisor** - Purple: Validation and monitoring
-- **✅ Success** - Green: Successful completions
-- **❌ Error** - Red: Errors and failures
-- **⚠️ Warning** - Yellow: Warnings and cautions
+### Component Colors (Cyber Aesthetic)
+- **📋 Planner** - Matrix Green (#00ff88): Task analysis and batch generation
+- **⚡ Executor** - Cyber Orange (#ff6b2b): Action execution and progress
+- **👁  Supervisor** - Neon Purple (#bf5af2): Validation and monitoring
+- **🤖 System** - Cyber Blue (#00d4ff): General system messages
+- **✅ Success** - Matrix Green: Successful completions
+- **❌ Error** - Red Alert (#ff3b30): Errors and failures
+- **⚠️ Warning** - Warning Yellow (#ffd60a): Warnings and cautions
 
-### Window Controls
-- **−/+** button: Collapse/expand window
-- **🗑** button: Clear all messages
-- **Header**: Drag to move window
-- **Status bar**: Shows current agent state
+### Keyboard Shortcuts
+- **q** - Quit the thinking window
+- **c** - Clear all messages
+- **d** - Toggle dark mode
+
+## 🚀 Installation
+
+The thinking window uses **Textual** (modern Python TUI framework):
+
+```bash
+pip install textual
+```
+
+Or install all dependencies:
+
+```bash
+pip install -r requirements.txt
+```
 
 ## 🚀 Usage
 
@@ -144,16 +156,22 @@ The thinking window is automatically integrated with:
 ## 🛠 Technical Details
 
 ### Architecture
-- Built with **Tkinter** (included with Python, no extra dependencies)
+- Built with **Textual** (modern Python TUI framework)
+- Uses **Rich** for beautiful text formatting
 - Runs in a **background thread** to avoid blocking agent execution
 - Uses a **message queue** for thread-safe communication
 - **Auto-scrolling** to latest messages
-- **Message history limit** (100 messages) to prevent memory issues
+- **Message history limit** (200 messages) to prevent memory issues
+
+### Graceful Fallback
+If Textual is not installed, the window falls back to:
+1. **Rich console output** - Beautiful formatted console messages
+2. **Plain text** - If Rich is also unavailable
 
 ### Platform Support
-- **macOS**: Full support with native styling
-- **Linux**: Supported with GTK/TK
-- **Windows**: Supported (may need minor styling adjustments)
+- **macOS**: Full support with native terminal integration
+- **Linux**: Full support with any modern terminal
+- **Windows**: Full support with Windows Terminal or ConEmu
 
 ### Performance
 - Minimal overhead on agent execution
@@ -163,49 +181,57 @@ The thinking window is automatically integrated with:
 
 ## 🎨 Customization
 
-### Window Size
-Edit the window initialization in your code:
+### CSS Styling
+The Textual app uses CSS for styling. Edit the `CSS` class variable in `src/ui/thinking_window.py`:
 
 ```python
-window = ThinkingWindow(
-    title="My Agent Thinking",
-    width=500,  # pixels
-    height=700  # pixels
-)
+CSS = """
+Screen {
+    background: #0a0a0a;
+}
+
+ThinkingLog {
+    background: #0a0a0a;
+    border: round #333;
+    scrollbar-color: #00ff88;
+}
+"""
 ```
 
-### Colors and Styling
-Modify the tag configurations in `src/ui/thinking_window.py`:
+### Color Schemes
+Modify the color mappings in `ThinkingMessage.to_rich_text()`:
 
 ```python
-self.text_area.tag_config("thinking", foreground="#9cdcfe")
-self.text_area.tag_config("planner", foreground="#4ec9b0")
-# ... etc
+colors = {
+    "planner": "#00ff88",      # Matrix green
+    "executor": "#ff6b2b",      # Cyber orange
+    "supervisor": "#bf5af2",    # Neon purple
+    # Add more...
+}
 ```
 
 ## 🐛 Troubleshooting
 
-### Tkinter not available
-If you see "⚠️ Tkinter not available - thinking window disabled":
-- Tkinter is required but not installed
-- See [TKINTER_INSTALL.md](TKINTER_INSTALL.md) for installation instructions
-- Quick fix (macOS): `brew install python-tk@3.14`
-- The agent will still work, just without the thinking window
+### Textual not available
+If you see "⚠️ Textual not available - using console output":
+```bash
+pip install textual
+```
 
-### Window doesn't appear
-- Ensure Tkinter is installed: `python3 -m tkinter` (should show a test window)
-- Check if running in headless environment
-- Try running the demo: `python demo_thinking_window.py`
-
-### Window appears behind other windows
-- This is expected behavior when other apps have focus
-- Click the window to bring it forward
-- The window is set to "always on top" within VS Code/terminal context
+### Window appears corrupted
+- Ensure your terminal supports Unicode and 256+ colors
+- Try iTerm2 (macOS), Windows Terminal (Windows), or Alacritty
+- Check terminal size is at least 80x24
 
 ### Messages not updating
 - Check that thinking window is enabled (no `--no-thinking-window` flag)
 - Verify the component is catching exceptions (wrapped in try/except)
 - Look for errors in terminal output
+
+### Performance issues
+- The thinking window runs in a background thread
+- If too slow, increase the queue processing interval
+- Consider using `--no-thinking-window` for performance-critical tasks
 
 ## 📚 Examples
 
@@ -228,12 +254,25 @@ Watch the window show:
 3. Executor requesting vision action (clicking search result)
 4. Supervisor validating each step
 
+## 🔄 Migration from Tkinter
+
+The thinking window was previously built with Tkinter. The new Textual version offers:
+
+| Feature | Tkinter (Old) | Textual (New) |
+|---------|---------------|---------------|
+| Styling | Limited, platform-dependent | CSS-like, consistent |
+| Look & Feel | Dated GUI | Modern terminal aesthetic |
+| Installation | Complex (requires system packages) | Simple (`pip install textual`) |
+| Thread Safety | Manual queue management | Built-in async support |
+| Customization | Code changes required | CSS-based theming |
+| Fallback | None | Rich console output |
+
 ## 🤝 Contributing
 
 To enhance the thinking window:
 
 1. Edit `src/ui/thinking_window.py`
-2. Add new message types or styling in the `_create_ui` method
+2. Modify the CSS for visual changes
 3. Test with `demo_thinking_window.py`
 4. Update integration points in planner/executor/supervisor as needed
 

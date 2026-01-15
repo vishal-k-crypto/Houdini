@@ -39,7 +39,6 @@ def capture_screen() -> bytes:
 
 def run_loop_mode(args):
     """Execute task using the continuous loop system."""
-    from .loop.loop_coordinator import LoopCoordinator
     from .ui.thinking_window import start_thinking_window, stop_thinking_window
     
     # Start thinking window if enabled
@@ -49,21 +48,63 @@ def run_loop_mode(args):
         logger.info("💭 Thinking window started")
     
     try:
-        # Initialize Ollama client and components
+        # Initialize Ollama client
         client = OllamaClient(model_name=args.model, cloud_endpoint=getattr(args, 'cloud_endpoint', None))
-        planner = OllamaPlanner(client)
-        supervisor = OllamaSupervisor(client)
         
-        coordinator = LoopCoordinator(
-            client=client,
-            planner=planner,
-            supervisor=supervisor,
-            enable_supervisor=not args.no_supervisor,
-            supervisor_mode=args.supervisor_mode,
-            enable_thinking_window=thinking_window_enabled
-        )
-        
-        result = coordinator.execute(args.task)
+        # Check if LangGraph mode is requested
+        if getattr(args, 'use_langgraph', False):
+            # NEW: LangGraph architecture with built-in state management and checkpointing
+            from .loop.langgraph_coordinator import LangGraphCoordinator
+            
+            # Use SQLite checkpoint if path provided
+            checkpoint_path = getattr(args, 'checkpoint_path', None)
+            
+            coordinator = LangGraphCoordinator(
+                client=client,
+                enable_thinking_window=thinking_window_enabled,
+                max_iterations=100,
+                checkpoint_path=checkpoint_path,
+                enable_human_approval=getattr(args, 'human_approval', False),
+            )
+            
+            logger.info("🔄 Using LANGGRAPH architecture (state machine with checkpointing)")
+            
+            # Check for resume
+            thread_id = getattr(args, 'resume_thread', None)
+            if thread_id:
+                logger.info(f"🔄 Resuming from checkpoint: {thread_id}")
+                result = coordinator.resume(thread_id)
+            else:
+                result = coordinator.execute(args.task)
+        elif getattr(args, 'use_adaptive', True):
+            # NEW: Adaptive architecture with macro/micro separation
+            from .loop.adaptive_coordinator import AdaptiveLoopCoordinator
+            
+            coordinator = AdaptiveLoopCoordinator(
+                client=client,
+                enable_thinking_window=thinking_window_enabled,
+                max_iterations=100
+            )
+            
+            logger.info("🧠 Using ADAPTIVE architecture (macro planner → micro executor → adaptive supervisor)")
+            result = coordinator.execute(args.task)
+        else:
+            # Legacy: Original loop coordinator
+            from .loop.loop_coordinator import LoopCoordinator
+            planner = OllamaPlanner(client)
+            supervisor = OllamaSupervisor(client)
+            
+            coordinator = LoopCoordinator(
+                client=client,
+                planner=planner,
+                supervisor=supervisor,
+                enable_supervisor=not args.no_supervisor,
+                supervisor_mode=args.supervisor_mode,
+                enable_thinking_window=thinking_window_enabled
+            )
+            
+            logger.info("📋 Using LEGACY architecture")
+            result = coordinator.execute(args.task)
     finally:
         # Keep window open for a bit to see final results
         if thinking_window_enabled:
@@ -127,24 +168,49 @@ def run_batch_mode(args):
                 logger.warning(f"  ⚠️ Vision action failed: {result.get('error', 'unknown')}")
 
 
+def run_replay_mode(args):
+    """Run the replay/time-travel debugging mode."""
+    from .replay.replay_ui import run_replay, list_sessions
+    
+    if getattr(args, 'list_sessions', False):
+        list_sessions()
+    else:
+        session_id = getattr(args, 'session_id', None)
+        run_replay(session_id)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Houdini Agent - Fast Batch Execution with Ollama Qwen 3 Coder")
-    parser.add_argument("--task", "-t", required=True, help="Task description")
-    parser.add_argument("--model", "-m", default="qwen2.5-coder:32b", 
-                        help="Ollama model for planning (default: qwen2.5-coder:32b, use qwen3-coder:480b for cloud)")
+    parser.add_argument("--task", "-t", required=False, help="Task description")
+    parser.add_argument("--model", "-m", default="qwen3-coder:480b-cloud", 
+                        help="Ollama model for planning (default: qwen3-coder:480b-cloud)")
     parser.add_argument("--cloud-endpoint", help="Ollama cloud endpoint URL (e.g., https://cloud.ollama.ai)")
     parser.add_argument("--vision-steps", type=int, default=3, help="Max steps for vision actions")
     
-    # Loop mode arguments
-    parser.add_argument("--loop", action="store_true", 
-                        help="Use continuous loop mode (keeps model aware of state)")
+    # Supervisor arguments (enabled by default)
     parser.add_argument("--no-supervisor", action="store_true",
-                        help="Disable supervisor monitoring in loop mode")
+                        help="Disable supervisor monitoring (not recommended)")
     parser.add_argument("--supervisor-mode", default="background",
                         choices=["background", "checkpoint"],
                         help="Supervisor mode: background (parallel) or checkpoint (after batches)")
     parser.add_argument("--no-thinking-window", action="store_true",
                         help="Disable the floating thinking window")
+    
+    # Architecture mode
+    parser.add_argument("--use-adaptive", action="store_true", default=True,
+                        help="Use new adaptive architecture with macro/micro separation (default: True)")
+    parser.add_argument("--legacy", dest="use_adaptive", action="store_false",
+                        help="Use legacy architecture instead of adaptive")
+    
+    # LangGraph mode (NEW!)
+    parser.add_argument("--langgraph", dest="use_langgraph", action="store_true", default=False,
+                        help="Use LangGraph-based architecture with built-in state management and checkpointing")
+    parser.add_argument("--checkpoint-path", type=str, default=None,
+                        help="SQLite path for persistent LangGraph checkpoints (e.g., data/checkpoints.db)")
+    parser.add_argument("--resume-thread", type=str, default=None,
+                        help="Resume a previous LangGraph execution by thread ID")
+    parser.add_argument("--human-approval", action="store_true", default=False,
+                        help="Enable human-in-the-loop approval points (LangGraph only)")
     
     # Enhanced executor arguments (NEW!)
     parser.add_argument("--use-enhanced", action="store_true", default=True,
@@ -152,7 +218,27 @@ def main():
     parser.add_argument("--no-enhanced", dest="use_enhanced", action="store_false",
                         help="Disable enhanced executor, use basic PyAutoGUI only")
     
+    # Replay/Time Travel mode (NEW!)
+    parser.add_argument("--replay", dest="replay_mode", action="store_true", default=False,
+                        help="Enter replay mode to debug past executions with time travel")
+    parser.add_argument("--replay-session", dest="session_id", type=str, default=None,
+                        help="Replay a specific session by task ID or filepath")
+    parser.add_argument("--replay-list", dest="list_sessions", action="store_true", default=False,
+                        help="List all available replay sessions")
+    
     args = parser.parse_args()
+    
+    # Handle replay mode
+    if getattr(args, 'replay_mode', False) or getattr(args, 'list_sessions', False) or getattr(args, 'session_id', None):
+        run_replay_mode(args)
+        return
+    
+    # Task is required if not in replay mode
+    if not args.task:
+        parser.error("--task/-t is required unless using --replay mode")
+    
+    # Force loop mode (always enabled)
+    args.loop = True
     
     # Log enhanced mode status
     if hasattr(args, 'use_enhanced'):
@@ -161,16 +247,24 @@ def main():
         else:
             logger.info("🐌 Enhanced executor DISABLED (using basic PyAutoGUI)")
 
+    # Log architecture mode
+    if getattr(args, 'use_langgraph', False):
+        logger.info("🔄 LANGGRAPH architecture: State Machine with Checkpointing")
+        if args.checkpoint_path:
+            logger.info(f"   Checkpoint path: {args.checkpoint_path}")
+        if args.resume_thread:
+            logger.info(f"   Resuming thread: {args.resume_thread}")
+    elif getattr(args, 'use_adaptive', True):
+        logger.info("🧠 ADAPTIVE architecture: Macro Planner → Micro Executor → Adaptive Supervisor")
+    else:
+        logger.info("📋 LEGACY architecture: Planner → Executor → Supervisor")
+
     logger.info(f"🚀 Task: {args.task}")
+    logger.info(f"🔄 Loop mode with supervisor {'DISABLED' if args.no_supervisor else 'ENABLED'}")
     start_time = time.time()
 
-    if args.loop:
-        # New loop-based execution with continuous state awareness
-        logger.info("🔄 Using continuous loop mode")
-        run_loop_mode(args)
-    else:
-        # Legacy batch execution
-        run_batch_mode(args)
+    # Always use loop mode
+    run_loop_mode(args)
     
     elapsed = time.time() - start_time
     logger.info(f"\n🎉 Completed in {elapsed:.1f}s")

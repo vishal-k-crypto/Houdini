@@ -2,6 +2,11 @@
 ExecutorLoop - Continuous execution loop for the agent.
 The model always knows what it's doing through context prompts.
 Now enhanced with pattern learning and recovery handling.
+
+UPDATED: Now uses event-driven waiting via macOS Accessibility Tree
+instead of fixed time.sleep() calls for better reliability and speed.
+
+UPDATED: Now logs all events to the Replay system for "Time Travel" debugging.
 """
 
 import time
@@ -14,6 +19,24 @@ from ..utils.logging import logger
 from ..utils.pattern_store import pattern_store
 from ..utils.choice_tracker import choice_tracker
 from ..ui.thinking_window import show_executor_thinking, show_thinking
+
+# Import replay system for time travel debugging
+try:
+    from ..replay.execution_logger import get_execution_logger, ExecutionLogger
+    REPLAY_AVAILABLE = True
+except ImportError:
+    REPLAY_AVAILABLE = False
+
+# Import event-driven wait system
+try:
+    from ..utils.ui_wait import (
+        get_ui_wait_system, wait_for_ui_stable, smart_wait,
+        wait_for_element, wait_for_window_ready, UIWaitSystem
+    )
+    UI_WAIT_AVAILABLE = True
+except ImportError:
+    UI_WAIT_AVAILABLE = False
+    logger.debug("Event-driven UI wait system not available, using fixed sleeps")
 
 
 class ExecutorLoop:
@@ -55,6 +78,15 @@ class ExecutorLoop:
         
         # Recovery handler (initialized lazily)
         self._recovery_handler = None
+        
+        # Event-driven wait system (initialized lazily)
+        self._ui_wait: Optional[UIWaitSystem] = None
+        if UI_WAIT_AVAILABLE:
+            try:
+                self._ui_wait = get_ui_wait_system()
+                logger.debug("Event-driven UI wait system initialized")
+            except Exception as e:
+                logger.debug(f"Could not init UI wait system: {e}")
     
     @property
     def recovery_handler(self):
@@ -80,6 +112,23 @@ class ExecutorLoop:
         self.running = True
         self.state.status = LoopStatus.RUNNING
         self.state.started_at = datetime.now()
+        
+        # Start replay session for time travel debugging
+        self._replay_logger: Optional[ExecutionLogger] = None
+        if REPLAY_AVAILABLE:
+            try:
+                self._replay_logger = get_execution_logger()
+                self._replay_logger.start_session(
+                    task_id=self.state.task_id,
+                    task_description=self.state.task_description,
+                    metadata={
+                        "batches": len(self.state.batches),
+                        "architecture": "executor_loop",
+                    }
+                )
+                logger.debug("📼 Replay session started for time travel debugging")
+            except Exception as e:
+                logger.debug(f"Could not start replay session: {e}")
         
         logger.info(f"🔄 ExecutorLoop starting: {self.state.task_description}")
         logger.info(f"📋 Plan has {len(self.state.batches)} batches")
@@ -115,11 +164,13 @@ class ExecutorLoop:
                 if self.state.is_task_complete():
                     logger.info(f"✅ All batches completed ({self.state.current_batch_idx}/{len(self.state.batches)})")
                     
-                    # Verify task is actually complete using AI
-                    verification_result = self._verify_task_completion()
+                    # CRITICAL: Verify task is ACTUALLY complete using robust verification
+                    verification_result = self._robust_task_verification()
+                    confidence = verification_result.get("confidence", 0)
                     
-                    if verification_result.get("complete"):
-                        logger.info(f"✅ Task verified as complete: {verification_result.get('reason')}")
+                    if verification_result.get("complete") and confidence >= 0.65:  # Lowered from 0.75
+                        logger.info(f"✅ Task VERIFIED complete: {verification_result.get('reason')}")
+                        logger.info(f"   Confidence: {confidence:.0%}")
                         self.state.status = LoopStatus.COMPLETED
                         
                         # Save final checkpoint with screenshot
@@ -134,19 +185,31 @@ class ExecutorLoop:
                         
                         break
                     else:
-                        # Task not actually complete - add more batches
-                        logger.warning(f"⚠️ Task not verified complete: {verification_result.get('reason')}")
-                        additional_batches = verification_result.get("additional_batches", [])
+                        # Task NOT complete - add corrective actions
+                        reason = verification_result.get("reason", "Unknown")
+                        next_steps = verification_result.get("next_steps", [])
                         
-                        if additional_batches:
-                            logger.info(f"🔄 Adding {len(additional_batches)} more batches to complete task")
-                            self.state.batches.extend(additional_batches)
-                            # Don't break - continue execution
+                        logger.warning(f"⚠️ Task NOT complete (confidence: {confidence:.0%})")
+                        logger.warning(f"   Reason: {reason}")
+                        
+                        if next_steps:
+                            logger.info(f"🔄 Attempting {len(next_steps)} corrective actions...")
+                            corrective_batches = self._create_corrective_batches(next_steps)
+                            self.state.batches.extend(corrective_batches)
+                            logger.info(f"   Added {len(corrective_batches)} corrective batches")
+                            # Continue execution
                         else:
-                            # No additional actions suggested, mark as complete anyway
-                            logger.info("✅ No additional actions suggested, marking complete")
-                            self.state.status = LoopStatus.COMPLETED
-                            break
+                            # Generate recovery plan
+                            logger.info("🤔 Generating recovery plan...")
+                            recovery_batches = self._generate_recovery_plan(verification_result)
+                            
+                            if recovery_batches:
+                                self.state.batches.extend(recovery_batches)
+                                logger.info(f"   Added {len(recovery_batches)} recovery batches")
+                            else:
+                                logger.error("❌ Unable to determine next steps")
+                                self.state.status = LoopStatus.FAILED
+                                break
                 
                 # Log context every few iterations
                 if self.loop_iterations % 5 == 1:
@@ -176,6 +239,16 @@ class ExecutorLoop:
             self.running = False
             self.state.completed_at = datetime.now()
             
+            # End replay session for time travel debugging
+            if self._replay_logger and self._replay_logger.current_session:
+                try:
+                    success = self.state.status == LoopStatus.COMPLETED
+                    error = None if success else f"Status: {self.state.status.value}"
+                    self._replay_logger.end_session(success=success, error=error)
+                    logger.debug("📼 Replay session saved for time travel debugging")
+                except Exception as e:
+                    logger.debug(f"Could not end replay session: {e}")
+            
             # Record execution pattern for learning
             self._record_pattern_learning()
         
@@ -203,6 +276,14 @@ class ExecutorLoop:
                 show_executor_thinking(f"Starting {batch_type.upper()} batch: {description}")
             except:
                 pass
+            
+            # Log batch start to replay system
+            if self._replay_logger and self._replay_logger.current_session:
+                self._replay_logger.log_batch_start(
+                    self.state.current_batch_idx,
+                    batch_type,
+                    description
+                )
         
         if batch_type == "blind":
             return self._execute_blind_step(batch)
@@ -222,6 +303,10 @@ class ExecutorLoop:
             num_actions = len(actions)
             logger.info(f"  ✅ Batch complete ({num_actions} action{'s' if num_actions != 1 else ''})")
             
+            # Log batch completion to replay
+            if self._replay_logger and self._replay_logger.current_session:
+                self._replay_logger.log_batch_complete(self.state.current_batch_idx, True)
+            
             # Save checkpoint with screenshot after batch completion
             try:
                 checkpoint = self.state.save_checkpoint(
@@ -229,15 +314,27 @@ class ExecutorLoop:
                     capture_screenshot=True
                 )
                 logger.debug(f"  📸 Checkpoint saved: {checkpoint.screenshot_path}")
+                
+                # Log screenshot to replay
+                if self._replay_logger and self._replay_logger.current_session and checkpoint.screenshot_path:
+                    self._replay_logger.log_screenshot(
+                        checkpoint.screenshot_path,
+                        f"After batch {self.state.current_batch_idx + 1}"
+                    )
             except Exception as e:
                 logger.debug(f"  Screenshot checkpoint failed: {e}")
             
             self.state.advance_batch()
-            time.sleep(0.3)  # UI settle time
+            # Event-driven wait for UI to settle after batch
+            self._smart_wait_after("batch_complete")
             return {"stop": False}
         
         action = actions[self.state.current_action_idx]
         start_time = time.time()
+        
+        # Log action start to replay
+        if self._replay_logger and self._replay_logger.current_session:
+            self._replay_logger.log_action(action, "blind")
         
         try:
             success = self._execute_action(action)
@@ -250,6 +347,10 @@ class ExecutorLoop:
                 success=success,
                 duration_ms=duration_ms
             )
+            
+            # Log action completion to replay
+            if self._replay_logger and self._replay_logger.current_session:
+                self._replay_logger.log_action_complete(action, success, duration_ms)
             
             if success:
                 logger.info(f"  ↳ {action} [{duration_ms:.0f}ms]")
@@ -286,7 +387,8 @@ class ExecutorLoop:
             # Already executed, move to next batch
             logger.info(f"  ✅ Vision batch complete")
             self.state.advance_batch()
-            time.sleep(0.3)
+            # Event-driven wait for UI to settle
+            self._smart_wait_after("vision")
             return {"stop": False}
         
         logger.info(f"  👁️ Vision action needed: {action_desc}")
@@ -338,7 +440,8 @@ class ExecutorLoop:
         
         # Advance action index to mark vision action as done
         self.state.advance_action()
-        time.sleep(0.5)  # Extra time after vision actions
+        # Event-driven wait for UI to settle after vision action
+        self._smart_wait_after("vision")
         
         return {"stop": False}
     
@@ -360,7 +463,9 @@ class ExecutorLoop:
         - "hotkey:key1,key2" → pyautogui.hotkey(key1, key2)
         - "type:text" → pyautogui.write(text)
         - "key:keyname" → pyautogui.press(keyname)
-        - "wait:seconds" → time.sleep(seconds)
+        - "wait:seconds" → time.sleep(seconds) OR smart wait
+        - "wait_for:element_text" → wait for element to appear (NEW)
+        - "wait_stable" → wait for UI to stabilize (NEW)
         - "click:x,y" → pyautogui.click(x, y)
         """
         try:
@@ -368,18 +473,51 @@ class ExecutorLoop:
                 keys = action[7:].split(",")
                 keys = [k.strip() for k in keys]
                 pyautogui.hotkey(*keys)
+                # Event-driven wait after hotkey
+                self._smart_wait_after("hotkey")
                 
             elif action.startswith("type:"):
                 text = action[5:]
                 pyautogui.write(text, interval=0.02)
+                # Minimal wait for typing
+                self._smart_wait_after("type")
                 
             elif action.startswith("key:"):
                 key = action[4:].strip()
                 pyautogui.press(key)
+                # Smart wait after key press
+                self._smart_wait_after("key")
+            
+            elif action.startswith("wait_for:"):
+                # NEW: Wait for specific element to appear
+                element_text = action[9:].strip()
+                if self._ui_wait:
+                    result = self._ui_wait.wait_for_element(text=element_text, timeout_ms=10000)
+                    if not result.success:
+                        logger.warning(f"Element '{element_text}' not found after {result.waited_ms:.0f}ms")
+                else:
+                    time.sleep(2.0)  # Fallback
+            
+            elif action.startswith("wait_stable"):
+                # NEW: Wait for UI to stabilize
+                if self._ui_wait:
+                    result = self._ui_wait.wait_for_ui_stable()
+                    logger.debug(f"UI stabilized after {result.waited_ms:.0f}ms")
+                else:
+                    time.sleep(0.5)  # Fallback
                 
             elif action.startswith("wait:"):
                 secs = float(action[5:])
-                time.sleep(secs)
+                # Use event-driven wait if available, otherwise fixed sleep
+                if self._ui_wait and secs >= 0.3:
+                    # For longer waits, use UI stability check
+                    result = self._ui_wait.wait_for_ui_stable(
+                        max_wait_ms=int(secs * 1000),
+                        stability_ms=150
+                    )
+                    logger.debug(f"Smart wait: requested {secs}s, actual {result.waited_ms:.0f}ms")
+                else:
+                    time.sleep(secs)
                 
             elif action.startswith("click:"):
                 coords = action[6:].split(",")
@@ -395,6 +533,8 @@ class ExecutorLoop:
                 pyautogui.moveTo(target_x, target_y, duration=0.2)
                 time.sleep(0.05)
                 pyautogui.click()
+                # Event-driven wait after click
+                self._smart_wait_after("click")
                 
             else:
                 logger.warning(f"Unknown action format: {action}")
@@ -404,6 +544,37 @@ class ExecutorLoop:
             
         except Exception as e:
             logger.error(f"Action execution error: {e}")
+            raise
+    
+    def _smart_wait_after(self, action_type: str):
+        """
+        Event-driven wait after an action completes.
+        Uses UI stability detection instead of fixed sleep.
+        """
+        if self._ui_wait:
+            try:
+                if action_type in ("batch_complete", "vision"):
+                    # These need longer stability checks
+                    result = self._ui_wait.wait_for_ui_stable(
+                        max_wait_ms=2000,
+                        stability_ms=200
+                    )
+                else:
+                    result = self._ui_wait.smart_wait_after_action(action_type)
+                logger.debug(f"Post-{action_type} wait: {result.waited_ms:.0f}ms")
+            except Exception as e:
+                logger.debug(f"Smart wait failed, using fallback: {e}")
+                time.sleep(0.1)
+        else:
+            # Fallback to fixed sleeps
+            if action_type == "type":
+                time.sleep(0.05)
+            elif action_type == "click":
+                time.sleep(0.15)
+            elif action_type in ("batch_complete", "vision"):
+                time.sleep(0.3)
+            else:
+                time.sleep(0.1)
             raise
     
     def stop(self):
@@ -546,6 +717,162 @@ class ExecutorLoop:
             return "after_click"
         else:
             return "generic"
+    
+    def _robust_task_verification(self) -> Dict:
+        """
+        Robust task verification using multiple methods.
+        Much more reliable than simple LLM check.
+        
+        Returns:
+            {
+                "complete": bool,
+                "confidence": float (0-1), 
+                "reason": str,
+                "evidence": List[str],
+                "next_steps": List[str]
+            }
+        """
+        try:
+            from .task_verifier import get_verifier
+            from ..utils.accessibility_reader import get_frontmost_app
+            
+            logger.info("🔍 Running robust task verification...")
+            
+            # Get current state
+            app_info = get_frontmost_app()
+            
+            current_state = {
+                "app": app_info.get("app", ""),
+                "window": app_info.get("window", ""),
+                "batch_count": len(self.state.batches),
+                "actions_completed": len(self.state.action_history)
+            }
+            
+            # Get verifier and run verification
+            verifier = get_verifier(self.cli)
+            result = verifier.verify_task_complete(
+                self.state.task_description,
+                self.state.action_history,
+                current_state
+            )
+            
+            # Log evidence
+            if result.get("evidence"):
+                logger.info("📋 Verification evidence:")
+                for evidence in result["evidence"][:5]:  # Show top 5
+                    logger.info(f"   • {evidence}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Robust verification failed: {e}")
+            # Fallback to old method
+            return self._verify_task_completion()
+    
+    def _create_corrective_batches(self, next_steps: List[str]) -> List[Dict]:
+        """Create batches from corrective action descriptions."""
+        batches = []
+        
+        for step in next_steps[:3]:  # Max 3 corrective actions
+            step_lower = step.lower()
+            
+            # Determine if vision or blind action
+            if any(kw in step_lower for kw in ["click", "find", "verify", "locate", "check"]):
+                batches.append({
+                    "type": "vision",
+                    "action": step,
+                    "description": f"Corrective: {step}"
+                })
+            elif any(kw in step_lower for kw in ["type", "enter", "press"]):
+                # Extract what to type if possible
+                if "type" in step_lower and '"' in step:
+                    text = step.split('"')[1] if '"' in step else step.split("'")[1]
+                    batches.append({
+                        "type": "blind",
+                        "actions": [f"type:{text}"],
+                        "description": f"Corrective: {step}"
+                    })
+                else:
+                    batches.append({
+                        "type": "blind",
+                        "actions": [step],
+                        "description": f"Corrective: {step}"
+                    })
+            else:
+                # Generic action
+                batches.append({
+                    "type": "vision",
+                    "action": step,
+                    "description": f"Corrective: {step}"
+                })
+        
+        return batches
+    
+    def _generate_recovery_plan(self, verification_result: Dict) -> List[Dict]:
+        """Generate recovery plan when task is incomplete but no clear next steps."""
+        if not self.cli:
+            return []
+        
+        try:
+            from ..utils.accessibility_reader import get_frontmost_app, format_ui_for_llm
+            
+            app_info = get_frontmost_app()
+            screen_context = format_ui_for_llm(max_elements=30)
+            
+            prompt = f"""TASK RECOVERY PLANNING
+
+**Original Task:** {self.state.task_description}
+
+**Current State:**
+- App: {app_info.get('app', 'Unknown')}
+- Window: {app_info.get('window', '')}
+- Actions completed: {len(self.state.action_history)}
+
+**Verification Result:**
+- Complete: {verification_result.get('complete')}
+- Confidence: {verification_result.get('confidence', 0):.0%}
+- Reason: {verification_result.get('reason')}
+
+**Screen State:**
+{screen_context}
+
+**Your Task:**
+Generate 1-3 SPECIFIC actions to complete this task. Be PRECISE about UI elements.
+
+**Response Format:**
+ACTION1: [specific action with UI element details]
+ACTION2: [if needed]
+ACTION3: [if needed]
+
+Examples:
+- ACTION1: Click on the message input field at the bottom of the chat
+- ACTION1: Type "test message" in the active input field
+- ACTION1: Click the Send button (blue button at bottom-right)
+
+Your recovery actions:"""
+
+            response = self.cli.generate(prompt, temperature=0.3).strip()
+            
+            # Parse actions
+            actions = []
+            for line in response.split("\n"):
+                if line.strip().startswith("ACTION"):
+                    action_text = line.split(":", 1)[1].strip() if ":" in line else line.strip()
+                    if action_text and len(action_text) > 5:
+                        actions.append(action_text)
+            
+            if actions:
+                logger.info(f"💡 Generated {len(actions)} recovery actions")
+                for i, action in enumerate(actions, 1):
+                    logger.info(f"   {i}. {action}")
+                
+                return self._create_corrective_batches(actions)
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Recovery plan generation failed: {e}")
+            return []
     
     def _verify_task_completion(self) -> Dict:
         """

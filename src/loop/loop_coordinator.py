@@ -119,12 +119,11 @@ class LoopCoordinator:
             # 3. Create vision handler wrapper
             vision_callback = self._create_vision_handler()
             
-            # 4. Create loops - pass CLI for recovery handling
+            # 4. Create loops
             self.executor_loop = ExecutorLoop(
                 state=self.state,
                 on_vision_needed=vision_callback,
-                action_delay=0.1,
-                cli=self.cli  # Enable recovery with LLM guidance
+                action_delay=0.1
             )
             
             if self.enable_supervisor:
@@ -200,7 +199,7 @@ class LoopCoordinator:
             try:
                 from ..agents.vision_executor import execute_vision_action
                 # Reduce max_attempts to 1 since we have heuristics now
-                return execute_vision_action(self.cli, action_description, max_attempts=1)
+                return execute_vision_action(self.client, action_description, max_attempts=1)
             except Exception as e:
                 logger.error(f"Vision handler error: {e}")
                 return {"success": False, "error": str(e)}
@@ -268,7 +267,6 @@ def run_with_loop(task: str,
         client=client,
         planner=planner,
         supervisor=supervisor,
-        planner=planner,
         enable_supervisor=enable_supervisor,
         supervisor_mode=supervisor_mode,
         enable_thinking_window=enable_thinking_window

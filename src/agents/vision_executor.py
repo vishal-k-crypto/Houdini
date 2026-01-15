@@ -1,6 +1,12 @@
 """
 Vision Executor - Uses accessibility tree for smart element interaction.
-Much faster than OCR/screenshot-based approaches.
+Falls back to fast coordinate prediction when accessibility returns 0 elements.
+
+NOW WITH PROBABILITY MODEL:
+- Analyzes task completeness and uncertainty
+- Adjusts match probability thresholds dynamically
+- Handles partial/ambiguous task specifications (80-90% info)
+- Uses flexible execution strategies based on task analysis
 """
 
 import re
@@ -14,103 +20,334 @@ from ..utils.accessibility_reader import (
     click_element
 )
 from ..utils.gemini_client import GeminiCLI
+from ..utils.coordinate_predictor import get_predictor
+
+# Try to import probability model
+try:
+    from ..utils.probability_model import (
+        get_probability_model,
+        analyze_task_flexibility,
+        get_flexible_execution_params
+    )
+    PROBABILITY_MODEL_AVAILABLE = True
+except ImportError:
+    PROBABILITY_MODEL_AVAILABLE = False
+    logger.warning("Probability model not available")
+
+# Try to import coordinate predictor
+try:
+    PREDICTOR_AVAILABLE = True
+except ImportError:
+    PREDICTOR_AVAILABLE = False
+    logger.warning("Coordinate predictor not available")
+
+# Try to import OmniParser (superior UI parsing for non-accessible apps)
+try:
+    from ..utils.omniparser_client import is_omniparser_available
+    OMNIPARSER_AVAILABLE = is_omniparser_available()
+    if OMNIPARSER_AVAILABLE:
+        logger.info("OmniParser available for non-accessible apps")
+except ImportError:
+    OMNIPARSER_AVAILABLE = False
+    logger.info("OmniParser not available (optional enhancement)")
 
 
-def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts: int = 3) -> Dict:
+def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts: int = 3,
+                          context: Optional[Dict] = None) -> Dict:
     """
     Execute a vision-based action using accessibility tree analysis.
     The executor analyzes the UI tree and determines where to click autonomously.
     
+    NOW WITH PROBABILITY-AWARE EXECUTION:
+    - Analyzes task completeness and uncertainty
+    - Adjusts match probability thresholds dynamically
+    - Uses flexible fallback strategies based on uncertainty
+    
     Uses a multi-strategy approach:
-    1. Smart heuristic analysis (fast, no LLM)
-    2. Position-based fallback for common patterns
-    3. LLM-guided targeting (slower, more accurate)
+    1. Smart heuristic analysis via accessibility API (fast, precise)
+    2. VLM screenshot analysis (universal, works for any app)
+    3. LLM-guided targeting (text-based fallback)
     
     Args:
         cli: Gemini CLI (only for complex fallback cases)
         action_description: e.g., "click first search result"
         max_attempts: retry count
+        context: Optional context for probability model
     
-    Returns: {"success": True/False, "error": "...", "method": "..."}
+    Returns: {"success": True/False, "error": "...", "method": "...", "match_probability": float, "flexibility": dict}
     """
     logger.info(f"👁️ Vision executor analyzing: {action_description}")
     
-    # Strategy 1: Smart heuristic analysis
+    # Get flexible execution params based on probability analysis
+    exec_params = {}
+    flexibility_info = {}
+    if PROBABILITY_MODEL_AVAILABLE:
+        exec_params = get_flexible_execution_params(action_description, context)
+        flexibility_info = {
+            'strategy': exec_params.get('execution_strategy', 'standard'),
+            'confidence': exec_params.get('confidence', 0.5),
+            'intent': exec_params.get('primary_intent', 'unknown'),
+            'predicted_info': exec_params.get('predicted_info', {}),
+        }
+        
+        logger.info(f"  📊 Probability analysis:")
+        logger.info(f"     Strategy: {exec_params.get('execution_strategy')}")
+        logger.info(f"     Confidence: {exec_params.get('confidence', 0):.0%}")
+        logger.info(f"     Min match: {exec_params.get('min_match_probability', 0.5):.0%}")
+        if exec_params.get('predicted_info'):
+            logger.info(f"     Predicted: {exec_params.get('predicted_info')}")
+    else:
+        # Default params
+        exec_params = {
+            'min_match_probability': 0.5,
+            'verification_strictness': 'moderate',
+            'fallback_chain': ['infer_from_context', 'supervisor_guidance'],
+            'exploration_enabled': False,
+        }
+    
+    # Strategy 1: Smart heuristic analysis via accessibility
     result = _analyze_and_execute(action_description)
     
     if result.get("success"):
-        result["method"] = "heuristic"
+        result["method"] = "accessibility"
+        result["match_probability"] = 1.0  # Accessibility matches are exact
+        result["flexibility"] = flexibility_info
         return result
     
-    # Strategy 2: Position-based fallback for known patterns
-    logger.info("  Trying position-based targeting...")
-    result = _position_based_click(action_description)
+    # Get dynamic match threshold from probability model
+    min_match_prob = exec_params.get('min_match_probability', 0.5)
     
-    if result.get("success"):
-        result["method"] = "position"
-        return result
+    # Strategy 2: OmniParser (for non-accessible apps like Adobe, Electron, Qt)
+    # Activates when accessibility returns zero elements
+    if OMNIPARSER_AVAILABLE and result.get("reason") == "zero_elements":
+        logger.info(f"  🔬 Using OmniParser for non-accessible app (threshold: {min_match_prob:.0%})...")
+        omni_result = _omniparser_fallback(action_description, min_match_prob)
+        
+        if omni_result.get("success"):
+            omni_result["method"] = "omniparser"
+            omni_result["flexibility"] = flexibility_info
+            return omni_result
     
-    # Strategy 3: LLM-guided fallback (rare)
+    # Strategy 3: Fast coordinate prediction (universal - works for any app)
+    if PREDICTOR_AVAILABLE:
+        logger.info(f"  ⚡ Using fast coordinate prediction (threshold: {min_match_prob:.0%})...")
+        result = _fast_coordinate_fallback(action_description, min_match_prob)
+        
+        if result.get("success"):
+            result["method"] = "coordinate_prediction"
+            result["flexibility"] = flexibility_info
+            return result
+        elif result.get("match_probability", 0) > 0:
+            # Found something but with low probability
+            match_prob = result.get('match_probability', 0)
+            logger.warning(f"  Prediction found element with {match_prob:.0%} match probability")
+            
+            # If exploration is enabled and we have alternatives, try them
+            if exec_params.get('exploration_enabled') and match_prob > 0.3:
+                logger.info("  🔍 Exploration enabled - proceeding with low-confidence match")
+                result["method"] = "coordinate_prediction_exploratory"
+                result["flexibility"] = flexibility_info
+                return result
+    
+    # Strategy 4: LLM-guided fallback (last resort)
     logger.warning("  Using LLM-guided fallback...")
     result = _llm_fallback(cli, action_description, max_attempts)
     result["method"] = "llm"
+    result["flexibility"] = flexibility_info
     return result
 
 
-def _position_based_click(action_description: str) -> Dict:
+def _omniparser_fallback(action_description: str, min_match_probability: float = 0.5) -> Dict:
     """
-    Fallback: Click based on known UI patterns when element detection fails.
-    Uses learned positions for common app layouts.
+    Use OmniParser to find and click UI elements.
+    
+    OmniParser uses YOLOv8 + Florence-2 for superior UI detection on
+    non-accessible apps like Adobe Creative Cloud, Electron apps, etc.
+    
+    Args:
+        action_description: What element to find and click
+        min_match_probability: Minimum match score to consider success
+        
+    Returns:
+        {
+            "success": True/False,
+            "coordinates": (x, y) or None,
+            "match_probability": float,
+            "element": detected element info,
+            "error": "..." or None
+        }
     """
     import pyautogui
+    import io
+    
+    try:
+        from ..utils.omniparser_screen_parser import get_omniparser
+    except ImportError:
+        return {"success": False, "error": "OmniParser not available"}
+    
+    try:
+        # Capture current screen
+        screenshot = pyautogui.screenshot()
+        buffer = io.BytesIO()
+        screenshot.save(buffer, format='PNG')
+        screenshot_bytes = buffer.getvalue()
+        
+        # Get parser and find element
+        parser = get_omniparser()
+        match = parser.find_element_by_description(screenshot_bytes, action_description)
+        
+        if match is None:
+            logger.warning(f"  OmniParser: No element matching '{action_description}'")
+            return {
+                "success": False,
+                "match_probability": 0.0,
+                "error": "No matching element found"
+            }
+        
+        # Check if match meets threshold
+        if match.score < min_match_probability:
+            logger.warning(f"  OmniParser: Match score {match.score:.0%} below threshold {min_match_probability:.0%}")
+            return {
+                "success": False,
+                "match_probability": match.score,
+                "element": str(match.element),
+                "coordinates": match.center,
+                "error": f"Match confidence too low: {match.score:.0%}"
+            }
+        
+        # Execute click
+        x, y = match.center
+        logger.info(f"  OmniParser: Found '{match.element.caption or match.element.ocr_text}' at ({x}, {y})")
+        logger.info(f"  Match score: {match.score:.0%}, reason: {match.match_reason}")
+        
+        # Move and click with natural motion
+        current_x, current_y = pyautogui.position()
+        distance = ((x - current_x)**2 + (y - current_y)**2)**0.5
+        duration = min(0.5, max(0.1, distance / 1000))
+        
+        pyautogui.moveTo(x, y, duration=duration)
+        pyautogui.click()
+        
+        logger.info(f"  ✅ OmniParser clicked: [{match.element.id}] at ({x}, {y})")
+        
+        return {
+            "success": True,
+            "coordinates": (x, y),
+            "match_probability": match.score,
+            "element": str(match.element),
+        }
+        
+    except Exception as e:
+        logger.error(f"  OmniParser error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def _fast_coordinate_fallback(action_description: str, min_match_probability: float = 0.5) -> Dict:
+    """
+    Use fast coordinate prediction to find and click elements.
+    Uses Qwen3-Coder to reason about UI layouts and predict precise coordinates.
+    MUCH faster than vision models (2-3 seconds vs 30+ seconds).
+    
+    This is a UNIVERSAL method that works for any application.
+    Returns match probability so caller can decide whether to proceed.
+    
+    Args:
+        action_description: What element to find and click
+        min_match_probability: Minimum match probability to consider success (0.0-1.0)
+    
+    Returns:
+        {
+            "success": True/False,
+            "coordinates": (x, y) or None,
+            "match_probability": float (0.0-1.0),
+            "confidence": float (0.0-1.0),
+            "element": "text of element found",
+            "error": "..." or None
+        }
+    """
     from ..utils.accessibility_reader import get_frontmost_app
     
+    # Get app context for better prediction
     app_info = get_frontmost_app()
-    app_name = (app_info.get("app", "") or "").lower()
-    window_title = (app_info.get("window", "") or "").lower()
-    screen_width, screen_height = pyautogui.size()
-    desc_lower = action_description.lower()
+    app_name = app_info.get("app", "Unknown")
+    window_title = app_info.get("window", "")
     
-    # YouTube-specific patterns
-    if "youtube" in app_name or "youtube" in window_title:
-        if any(kw in desc_lower for kw in ["first", "latest", "video", "thumbnail"]):
-            # YouTube video grid: first video is typically at ~30% from left, 45% from top
-            target_x = int(screen_width * 0.30)
-            target_y = int(screen_height * 0.45)
-            
-            logger.info(f"  📍 YouTube pattern: clicking at ({target_x}, {target_y})")
-            pyautogui.moveTo(target_x, target_y, duration=0.3)
-            time.sleep(0.1)
-            pyautogui.click()
-            return {"success": True}
+    task_context = f"Looking for: {action_description}"
     
-    # Google Search patterns
-    if "google" in window_title and "search" in window_title:
-        if "first" in desc_lower and "result" in desc_lower:
-            # First search result is typically at ~45% from left, 35% from top
-            target_x = int(screen_width * 0.45)
-            target_y = int(screen_height * 0.35)
-            
-            logger.info(f"  📍 Google pattern: clicking at ({target_x}, {target_y})")
-            pyautogui.moveTo(target_x, target_y, duration=0.3)
-            time.sleep(0.1)
-            pyautogui.click()
-            return {"success": True}
+    logger.info(f"  ⚡ Predicting coordinates for {app_name}...")
     
-    # Safari/browser general pattern - main content area
-    if any(kw in desc_lower for kw in ["first", "click", "open"]):
-        if "safari" in app_name or "chrome" in app_name or "firefox" in app_name:
-            # Main content area center
-            target_x = int(screen_width * 0.40)
-            target_y = int(screen_height * 0.50)
-            
-            logger.info(f"  📍 Browser pattern: clicking at ({target_x}, {target_y})")
-            pyautogui.moveTo(target_x, target_y, duration=0.3)
-            time.sleep(0.1)
-            pyautogui.click()
-            return {"success": True}
+    # Use fast predictor to find and click with probability threshold
+    predictor = get_predictor()
+    result = predictor.click_element(
+        action_description,
+        app_name,
+        window_title,
+        task_context,
+        min_match_probability
+    )
     
-    return {"success": False, "reason": "no_position_pattern_matched"}
+    # Log the match details
+    if result.get("success") or result.get("coordinates"):
+        match_prob = result.get("match_probability", 0)
+        element = result.get("element", "unknown")
+        logger.info(f"  📊 Match probability: {match_prob:.0%} for '{element}'")
+    
+    return result
+
+
+# Legacy VLM fallback - replaced by fast coordinate predictor
+def _vlm_screenshot_fallback(action_description: str, min_match_probability: float = 0.5) -> Dict:
+    """
+    Use VLM screenshot analysis to find and click elements.
+    Takes a screenshot, sends to Qwen3-VL, gets precise coordinates.
+    
+    This is a UNIVERSAL method that works for any application.
+    Returns match probability so caller can decide whether to proceed.
+    
+    Args:
+        action_description: What element to find and click
+        min_match_probability: Minimum match probability to consider success (0.0-1.0)
+    
+    Returns:
+        {
+            "success": True/False,
+            "coordinates": (x, y) or None,
+            "match_probability": float (0.0-1.0),
+            "confidence": float (0.0-1.0),
+            "element": "text of element found",
+            "error": "..." or None
+        }
+    """
+    from ..utils.accessibility_reader import get_frontmost_app
+    
+    try:
+        from ..utils.ollama_vlm import vlm_find_and_click
+    except ImportError:
+        logger.error("  VLM not available - this is a legacy fallback")
+        return {"success": False, "error": "VLM not available"}
+    
+    # Get app context for better VLM targeting
+    app_info = get_frontmost_app()
+    app_name = app_info.get("app", "Unknown")
+    window_title = app_info.get("window", "")
+    
+    task_context = f"App: {app_name}, Window: {window_title}"
+    
+    logger.info(f"  VLM context: {task_context}")
+    
+    # Use VLM to find and click with probability threshold
+    result = vlm_find_and_click(action_description, task_context, min_match_probability)
+    
+    # Log the match details
+    if result.get("found") or result.get("coordinates"):
+        match_prob = result.get("match_probability", 0)
+        element = result.get("element", "unknown")
+        logger.info(f"  📊 Match probability: {match_prob:.0%} for '{element}'")
+    
+    return result
+
+
+# _position_based_click removed - VLM is now the universal fallback
 
 
 def _analyze_and_execute(action_description: str) -> Dict:
@@ -137,6 +374,11 @@ def _analyze_and_execute(action_description: str) -> Dict:
     # Get and analyze UI elements
     elements = get_ui_elements_applescript(max_elements=100)
     logger.info(f"  Analyzing {len(elements)} UI elements")
+    
+    # If zero elements, signal to use fast coordinate prediction
+    if len(elements) == 0:
+        logger.warning("  ⚠️ Accessibility returned 0 elements - using fast prediction")
+        return {"success": False, "reason": "zero_elements", "use_predictor": True}
     
     # Filter elements based on intent and context
     candidates = _filter_relevant_elements(elements, intent, app_name, screen_width, screen_height)

@@ -4,10 +4,12 @@ from pathlib import Path
 from ..utils.gemini_client import GeminiCLI
 from ..utils.logging import logger
 from ..utils.prompt_loader import get_planner_prompt
+from ..utils.schemas import parse_planner_response, PlannerResponse, BlindBatch, VisionBatch
 from ..utils.prompt_evolution import prompt_evolution
 from ..utils.pattern_store import pattern_store, PatternStore
 from ..utils.choice_tracker import choice_tracker
 from ..utils.action_optimizer import action_optimizer, ActionOptimizer
+from ..utils.lesson_store import lesson_store
 from ..ui.thinking_window import show_planner_thinking, show_thinking
 
 TASK_HISTORY_FILE = Path(__file__).parent.parent.parent / "data" / "task_history.json"
@@ -103,6 +105,7 @@ class GeminiPlanner:
         self.memory = TaskMemory()
         self.pattern_store = pattern_store
         self.action_optimizer = action_optimizer
+        self.lesson_store = lesson_store
 
     def plan(self, task: str) -> List[Dict]:
         """
@@ -140,11 +143,14 @@ class GeminiPlanner:
             pass
         pattern_hints = self._get_pattern_hints(similar_patterns)
         
+        # 4. Retrieve relevant past lessons (RAG-based)
+        lessons_context = self.lesson_store.get_prompt_context(task, "planner")
+        
         # Load evolved system prompt
         system_prompt = get_planner_prompt()
         
         prompt = f"""{system_prompt}
-
+{lessons_context}
 ## Task: {task}
 {pattern_hints}
 ## Output Format
@@ -166,14 +172,9 @@ Output JSON only:"""
         
         response = self.cli.generate(prompt)
         try:
-            clean = response.strip()
-            if "```json" in clean:
-                clean = clean.split("```json")[1].split("```")[0]
-            elif "```" in clean:
-                clean = clean.split("```")[1].split("```")[0]
-            
-            data = json.loads(clean)
-            batches = data.get("batches", [])
+            # Use Pydantic validation for strict schema enforcement
+            parsed = parse_planner_response(response)
+            batches = [batch.model_dump() for batch in parsed.batches]
             
             # 4. Optimize the plan using learned patterns
             batches = self._optimize_batches(batches, task)
@@ -201,6 +202,15 @@ Output JSON only:"""
                 success=False,
                 error_type="parse_error",
                 error_details=str(e)
+            )
+            
+            # Also record as a lesson for future retrieval
+            self.lesson_store.record_failure(
+                component="planner",
+                task=task,
+                error_type="parse_error",
+                error_details=str(e),
+                suggestion="Ensure JSON output is well-formed with proper structure"
             )
             
             # Fallback: single blind batch

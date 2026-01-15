@@ -1,0 +1,1282 @@
+"""
+AdaptiveLoopCoordinator - New architecture with clear role separation.
+
+Key Philosophy:
+- Planner: Macro-level plans only (high-level task understanding)
+- Executor: Takes macro + screen info → generates micro cursor instructions
+- Supervisor: Handles randomness, guides executor, verifies completion, evolves tasks
+
+The system is designed to:
+1. Handle unpredictability gracefully
+2. Evolve tasks in real-time based on screen state
+3. Never get stuck - supervisor always has fallback control
+
+UPDATED: Now uses event-driven waiting via macOS Accessibility Tree
+instead of fixed time.sleep() calls for better reliability and speed.
+
+UPDATED: Now logs all events to the Replay system for "Time Travel" debugging.
+"""
+
+import time
+import json
+from datetime import datetime
+from typing import Dict, List, Optional, Callable
+from dataclasses import dataclass, field
+from enum import Enum
+
+from .loop_state import LoopState, LoopStatus, ActionRecord
+from ..utils.logging import logger
+from ..utils.ollama_client import OllamaClient
+from ..utils.schemas import (
+    MacroPlanResponse, MicroActionsResponse, SupervisorGuidance as PydanticSupervisorGuidance,
+    VerificationResult as PydanticVerificationResult, MicroAction as PydanticMicroAction,
+    SupervisorDecision
+)
+from ..ui.thinking_window import (
+    show_planner_thinking,
+    show_executor_thinking,
+    show_supervisor_thinking,
+    show_thinking,
+    set_window_status
+)
+
+# Import replay system for time travel debugging
+try:
+    from ..replay.execution_logger import get_execution_logger, ExecutionLogger
+    REPLAY_AVAILABLE = True
+except ImportError:
+    REPLAY_AVAILABLE = False
+
+# Import event-driven wait system
+try:
+    from ..utils.ui_wait import (
+        get_ui_wait_system, wait_for_ui_stable, smart_wait,
+        wait_for_element, wait_for_window_ready, UIWaitSystem
+    )
+    UI_WAIT_AVAILABLE = True
+except ImportError:
+    UI_WAIT_AVAILABLE = False
+    logger.debug("Event-driven UI wait system not available, using fixed sleeps")
+
+# Import probability model for flexible execution
+try:
+    from ..utils.probability_model import (
+        get_probability_model,
+        analyze_task_flexibility,
+        get_flexible_execution_params,
+        ExecutionFlexibility
+    )
+    PROBABILITY_MODEL_AVAILABLE = True
+except ImportError:
+    PROBABILITY_MODEL_AVAILABLE = False
+    logger.debug("Probability model not available in coordinator")
+
+# Import semantic checker for fast dual-path validation
+try:
+    from ..supervisor.semantic_checker import (
+        SemanticChecker,
+        get_semantic_checker,
+        quick_semantic_check,
+        SemanticCheckResult,
+        SemanticMismatchType
+    )
+    SEMANTIC_CHECKER_AVAILABLE = True
+except ImportError:
+    SEMANTIC_CHECKER_AVAILABLE = False
+
+# Import context memory for long-term file/resource learning
+try:
+    from ..utils.context_memory import (
+        get_context_memory,
+        learn_from_successful_task,
+        resolve_task_context
+    )
+    CONTEXT_MEMORY_AVAILABLE = True
+except ImportError:
+    CONTEXT_MEMORY_AVAILABLE = False
+    logger.debug("Context memory not available in coordinator")
+    logger.debug("Semantic checker not available, using LLM-only validation")
+
+
+class AdaptivePhase(str, Enum):
+    """Current phase of adaptive execution."""
+    PLANNING = "planning"           # Initial macro planning
+    EXECUTING = "executing"         # Executor generating/running micro actions  
+    SUPERVISOR_GUIDE = "supervisor_guide"  # Supervisor guiding executor
+    VERIFYING = "verifying"         # Verifying task completion
+    EVOLVING = "evolving"           # Task evolution/replanning
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass
+class MacroPlan:
+    """High-level macro plan from planner."""
+    task: str
+    macro_steps: List[Dict]  # [{step: "Open browser and go to X", context: "..."}, ...]
+    expected_outcome: str
+    success_criteria: str
+
+
+@dataclass  
+class MicroAction:
+    """Low-level micro action from executor."""
+    action_type: str  # "hotkey", "type", "click", "wait"
+    params: Dict
+    description: str
+    requires_screen: bool = False
+
+
+@dataclass
+class ScreenContext:
+    """Current screen state information."""
+    app_name: str
+    window_title: str
+    visible_elements: List[Dict]
+    screenshot_path: Optional[str] = None
+    raw_accessibility_tree: Optional[str] = None
+    timestamp: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
+class AdaptiveState:
+    """State for adaptive execution with full context."""
+    task: str
+    phase: AdaptivePhase = AdaptivePhase.PLANNING
+    
+    # Planning state
+    macro_plan: Optional[MacroPlan] = None
+    current_macro_step_idx: int = 0
+    
+    # Execution state  
+    pending_micro_actions: List[MicroAction] = field(default_factory=list)
+    executed_actions: List[Dict] = field(default_factory=list)
+    
+    # Screen context
+    last_screen_context: Optional[ScreenContext] = None
+    screen_context_history: List[ScreenContext] = field(default_factory=list)
+    
+    # Supervisor state
+    supervisor_interventions: int = 0
+    evolution_count: int = 0
+    supervisor_notes: List[str] = field(default_factory=list)
+    
+    # Probability/Flexibility state (NEW)
+    task_flexibility: Optional[Dict] = None  # Results from probability model
+    execution_params: Optional[Dict] = None  # Dynamic params from probability model
+    uncertainty_score: float = 0.0  # Overall uncertainty
+    
+    # Timestamps
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class AdaptiveLoopCoordinator:
+    """
+    New architecture with clear role separation:
+    
+    PLANNER (Macro):
+    - Receives task, gives high-level plan
+    - Example: "Open WhatsApp, find contact Kushal, send message"
+    - Does NOT specify exact actions
+    
+    EXECUTOR (Micro):
+    - Takes current macro step + screen info
+    - Generates micro cursor instructions
+    - Example: hotkey:cmd+space, type:WhatsApp, key:return
+    - Asks supervisor when unsure
+    
+    SUPERVISOR (Adaptive):
+    - Monitors for randomness/unexpected states
+    - Guides executor when screen doesn't match expectations
+    - Verifies task completion with screen analysis
+    - Takes over planning if verification fails
+    - Enables real-time task evolution
+    """
+    
+    def __init__(self,
+                 client: OllamaClient,
+                 enable_thinking_window: bool = True,
+                 max_iterations: int = 100,
+                 screen_capture_interval: float = 0.5):
+        self.client = client
+        self.enable_thinking_window = enable_thinking_window
+        self.max_iterations = max_iterations
+        self.screen_capture_interval = screen_capture_interval
+        
+        # Current state
+        self.state: Optional[AdaptiveState] = None
+        self.running = False
+        
+        # Replay logger (set in execute)
+        self._replay_logger: Optional[ExecutionLogger] = None
+        
+        # Event-driven wait system (initialized lazily)
+        self._ui_wait: Optional[UIWaitSystem] = None
+        if UI_WAIT_AVAILABLE:
+            try:
+                self._ui_wait = get_ui_wait_system()
+                logger.debug("AdaptiveCoordinator: Event-driven UI wait system initialized")
+            except Exception as e:
+                logger.debug(f"Could not init UI wait system: {e}")
+    
+    def _set_phase(self, new_phase: AdaptivePhase):
+        """Set phase and log to replay system."""
+        old_phase = self.state.phase if self.state else AdaptivePhase.PLANNING
+        self.state.phase = new_phase
+        
+        # Log phase change to replay
+        if self._replay_logger and self._replay_logger.current_session:
+            self._replay_logger.log_phase_change(old_phase.value, new_phase.value)
+        
+    def execute(self, task: str) -> Dict:
+        """Execute a task using the adaptive architecture."""
+        import uuid
+        start_time = time.time()
+        
+        # Generate task ID
+        task_id = str(uuid.uuid4())[:8]
+        
+        # Initialize state
+        self.state = AdaptiveState(task=task)
+        self.state.started_at = datetime.now()
+        self.running = True
+        
+        # Start replay session for time travel debugging
+        if REPLAY_AVAILABLE:
+            try:
+                self._replay_logger = get_execution_logger()
+                self._replay_logger.start_session(
+                    task_id=task_id,
+                    task_description=task,
+                    metadata={
+                        "architecture": "adaptive_coordinator",
+                    }
+                )
+                logger.debug("📼 Replay session started for time travel debugging")
+            except Exception as e:
+                logger.debug(f"Could not start replay session: {e}")
+        
+        logger.info(f"🎯 AdaptiveCoordinator starting: {task}")
+        self._show("system", f"Task received: {task}", "info")
+        
+        # NEW: Analyze task flexibility with probability model
+        if PROBABILITY_MODEL_AVAILABLE:
+            self._analyze_task_flexibility(task)
+        
+        try:
+            # PHASE 1: Macro Planning
+            self._set_phase(AdaptivePhase.PLANNING)
+            macro_plan = self._generate_macro_plan(task)
+            
+            if not macro_plan:
+                return {"success": False, "error": "Macro planning failed"}
+            
+            self.state.macro_plan = macro_plan
+            logger.info(f"📋 Macro plan: {len(macro_plan.macro_steps)} high-level steps")
+            
+            # PHASE 2: Adaptive Execution Loop
+            iteration = 0
+            while self.running and iteration < self.max_iterations:
+                iteration += 1
+                
+                # Check if all macro steps complete
+                if self.state.current_macro_step_idx >= len(macro_plan.macro_steps):
+                    # PHASE 3: Verification
+                    self._set_phase(AdaptivePhase.VERIFYING)
+                    verification = self._supervisor_verify_completion()
+                    
+                    if verification["complete"]:
+                        self._set_phase(AdaptivePhase.COMPLETED)
+                        break
+                    else:
+                        # PHASE 4: Evolution - Supervisor takes over
+                        self._set_phase(AdaptivePhase.EVOLVING)
+                        evolved = self._supervisor_evolve_task(verification)
+                        
+                        if not evolved:
+                            self._set_phase(AdaptivePhase.FAILED)
+                            break
+                        # Continue with evolved plan
+                        continue
+                
+                # Get current macro step
+                current_macro = macro_plan.macro_steps[self.state.current_macro_step_idx]
+                logger.info(f"\n▶️ Macro Step {self.state.current_macro_step_idx + 1}: {current_macro.get('step', 'Unknown')}")
+                
+                # EXECUTOR: Generate and execute micro actions
+                self._set_phase(AdaptivePhase.EXECUTING)
+                step_result = self._execute_macro_step(current_macro)
+                
+                if step_result.get("needs_supervisor"):
+                    # Executor needs guidance
+                    self._set_phase(AdaptivePhase.SUPERVISOR_GUIDE)
+                    guidance = self._supervisor_guide_executor(
+                        current_macro,
+                        step_result.get("reason", "Unknown situation")
+                    )
+                    
+                    if guidance.get("abort"):
+                        self._set_phase(AdaptivePhase.FAILED)
+                        break
+                    elif guidance.get("skip"):
+                        self.state.current_macro_step_idx += 1
+                        continue
+                    elif guidance.get("new_actions"):
+                        # Execute supervisor-provided actions
+                        self._execute_micro_actions(guidance["new_actions"])
+                    
+                if step_result.get("complete"):
+                    self.state.current_macro_step_idx += 1
+                
+                # Event-driven wait between iterations instead of fixed sleep
+                self._smart_wait_after("iteration")
+            
+            # Final result
+            elapsed = time.time() - start_time
+            self.state.completed_at = datetime.now()
+            
+            success = self.state.phase == AdaptivePhase.COMPLETED
+            
+            # Learn from successful task for context memory
+            if success and CONTEXT_MEMORY_AVAILABLE:
+                try:
+                    # Extract action descriptions for learning
+                    action_descriptions = [
+                        a.get("description", str(a)) 
+                        for a in self.state.executed_actions
+                    ]
+                    learn_from_successful_task(
+                        task=task,
+                        actions=action_descriptions,
+                        context=None  # Could add file paths extracted during execution
+                    )
+                    logger.debug("📁 Context memory updated from successful task")
+                except Exception as e:
+                    logger.debug(f"Could not update context memory: {e}")
+            
+            # End replay session for time travel debugging
+            if self._replay_logger and self._replay_logger.current_session:
+                try:
+                    error = None if success else f"Phase: {self.state.phase.value}"
+                    self._replay_logger.end_session(success=success, error=error)
+                    logger.debug("📼 Replay session saved for time travel debugging")
+                except Exception as e:
+                    logger.debug(f"Could not end replay session: {e}")
+            
+            return {
+                "success": success,
+                "elapsed": elapsed,
+                "macro_steps_completed": self.state.current_macro_step_idx,
+                "total_actions": len(self.state.executed_actions),
+                "supervisor_interventions": self.state.supervisor_interventions,
+                "evolution_count": self.state.evolution_count,
+                "phase": self.state.phase.value,
+                "uncertainty": self.state.uncertainty_score,
+                "flexibility": self.state.task_flexibility,
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Adaptive execution error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # End replay session on error
+            if self._replay_logger and self._replay_logger.current_session:
+                try:
+                    self._replay_logger.end_session(success=False, error=str(e))
+                except:
+                    pass
+            
+            return {"success": False, "error": str(e)}
+    
+    # ========== PROBABILITY MODEL INTEGRATION ==========
+    
+    def _analyze_task_flexibility(self, task: str):
+        """
+        Analyze task using the probability model for flexible execution.
+        
+        This determines:
+        - How complete the task specification is
+        - Where it falls on the macro-micro spectrum
+        - What the user's likely intent is
+        - What execution parameters to use
+        """
+        try:
+            flexibility = analyze_task_flexibility(task, context={
+                'current_app': self._get_current_app_name(),
+            })
+            
+            # Store in state
+            self.state.uncertainty_score = flexibility.overall_uncertainty
+            self.state.execution_params = get_flexible_execution_params(task)
+            self.state.task_flexibility = {
+                'completeness': flexibility.task_completeness.overall_score,
+                'macro_micro_position': flexibility.macro_micro.position,
+                'strategy': flexibility.macro_micro.execution_strategy,
+                'intent': flexibility.intent.primary_intent,
+                'intent_confidence': flexibility.intent.confidence,
+                'ambiguity': flexibility.intent.ambiguity_score,
+                'missing_info': flexibility.task_completeness.missing_info,
+                'predicted_info': flexibility.task_completeness.predicted_info,
+                'recommended_approach': flexibility.recommended_approach,
+                'fallback_strategies': flexibility.fallback_strategies,
+            }
+            
+            # Log analysis results
+            logger.info(f"📊 Task Flexibility Analysis:")
+            logger.info(f"   Completeness: {flexibility.task_completeness.overall_score:.0%}")
+            logger.info(f"   Macro-Micro: {flexibility.macro_micro.position:.2f} ({flexibility.macro_micro.execution_strategy})")
+            logger.info(f"   Intent: {flexibility.intent.primary_intent} ({flexibility.intent.confidence:.0%} confident)")
+            logger.info(f"   Uncertainty: {flexibility.overall_uncertainty:.0%}")
+            logger.info(f"   Approach: {flexibility.recommended_approach}")
+            
+            if flexibility.task_completeness.missing_info:
+                logger.info(f"   Missing: {', '.join(flexibility.task_completeness.missing_info)}")
+            
+            if flexibility.task_completeness.predicted_info:
+                logger.info(f"   Predicted: {flexibility.task_completeness.predicted_info}")
+            
+            # Show in thinking window
+            self._show("system", 
+                f"Task analysis: {flexibility.task_completeness.overall_score:.0%} complete, "
+                f"{flexibility.intent.primary_intent} intent, "
+                f"uncertainty: {flexibility.overall_uncertainty:.0%}",
+                "info"
+            )
+            
+        except Exception as e:
+            logger.warning(f"Flexibility analysis failed: {e}")
+            self.state.uncertainty_score = 0.5  # Default moderate uncertainty
+            self.state.task_flexibility = None
+    
+    def _get_current_app_name(self) -> Optional[str]:
+        """Get current frontmost app name for context."""
+        try:
+            from ..utils.accessibility_reader import get_frontmost_app
+            app_info = get_frontmost_app()
+            return app_info.get('app')
+        except:
+            return None
+    
+    # ========== PLANNER: MACRO LEVEL ==========
+    
+    def _generate_macro_plan(self, task: str) -> Optional[MacroPlan]:
+        """
+        Generate a high-level macro plan.
+        The planner ONLY provides macro understanding, NOT detailed actions.
+        """
+        self._show("planner", f"Analyzing task: {task}", "planning")
+        
+        # Include flexibility info in prompt if available
+        flexibility_context = ""
+        if self.state.task_flexibility:
+            flex = self.state.task_flexibility
+            flexibility_context = f"""
+TASK ANALYSIS (from probability model):
+- Completeness: {flex.get('completeness', 0):.0%} of information provided
+- Predicted intent: {flex.get('intent', 'unknown')}
+- Missing info: {', '.join(flex.get('missing_info', []))}
+- Predicted info: {flex.get('predicted_info', {})}
+- Recommended approach: {flex.get('recommended_approach', 'standard')}
+
+Use this analysis to:
+1. Fill in any missing information with reasonable defaults
+2. Adjust planning granularity based on completeness
+3. Add verification steps if uncertainty is high
+"""
+        
+        prompt = f"""You are a MACRO PLANNER. Your job is to understand the task at a HIGH LEVEL only.
+DO NOT give specific keyboard shortcuts or detailed actions.
+Give broad steps that a human would understand.
+{flexibility_context}
+TASK: {task}
+
+Output JSON:
+{{
+    "macro_steps": [
+        {{
+            "step": "High-level description of what to do",
+            "context": "What should be visible/achieved after this step",
+            "potential_issues": "What could go wrong"
+        }}
+    ],
+    "expected_outcome": "What success looks like",
+    "success_criteria": "How to verify the task is complete"
+}}
+
+EXAMPLES:
+- "Search for AI news" → [{{step: "Open a web browser", context: "Browser window visible"}}, {{step: "Navigate to a search engine", context: "Search page loaded"}}, {{step: "Search for AI news", context: "Search results displayed"}}]
+- "Send WhatsApp message to John" → [{{step: "Open WhatsApp", context: "WhatsApp window visible"}}, {{step: "Find contact John", context: "John's chat visible"}}, {{step: "Type and send message", context: "Message sent"}}]
+
+Keep steps BROAD and CONCEPTUAL. The executor will figure out the details.
+
+Generate the macro plan:"""
+        
+        try:
+            response = self.client.generate_json(prompt, temperature=0.3)
+            
+            # Use Pydantic validation for macro plan response
+            try:
+                validated = MacroPlanResponse.model_validate(response)
+                macro_steps = [step.model_dump() for step in validated.macro_steps]
+                expected_outcome = validated.expected_outcome
+                success_criteria = validated.success_criteria
+            except Exception as validation_error:
+                logger.warning(f"Pydantic validation failed, falling back: {validation_error}")
+                macro_steps = response.get("macro_steps", [])
+                expected_outcome = response.get("expected_outcome", "Task completed")
+                success_criteria = response.get("success_criteria", "User goal achieved")
+            
+            if not macro_steps:
+                raise ValueError("No macro steps generated")
+            
+            plan = MacroPlan(
+                task=task,
+                macro_steps=macro_steps,
+                expected_outcome=expected_outcome,
+                success_criteria=success_criteria
+            )
+            
+            for i, step in enumerate(macro_steps, 1):
+                step_desc = step.get('step', 'Unknown') if isinstance(step, dict) else str(step)
+                self._show("planner", f"Step {i}: {step_desc}", "planning")
+            
+            return plan
+            
+        except Exception as e:
+            logger.error(f"Macro planning failed: {e}")
+            return None
+    
+    # ========== EXECUTOR: MICRO LEVEL ==========
+    
+    def _execute_macro_step(self, macro_step: Dict) -> Dict:
+        """
+        Executor takes a macro step + screen context and generates micro actions.
+        If screen context doesn't match expectations, asks supervisor.
+        
+        DUAL-PATH VALIDATION:
+        1. Fast path: Semantic checker (< 1ms) - catches obvious app/window mismatches
+        2. Slow path: LLM analysis - only when fast path passes or is inconclusive
+        """
+        step_desc = macro_step.get("step", "Unknown step")
+        expected_context = macro_step.get("context", "")
+        
+        self._show("executor", f"Processing: {step_desc}", "executing")
+        
+        # ========== FAST PATH: Semantic Check (no LLM) ==========
+        # Check for obvious mismatches before any expensive operations
+        semantic_result = self._fast_semantic_check(macro_step)
+        if semantic_result and semantic_result.should_interrupt:
+            logger.warning(f"⚡ Semantic mismatch detected (fast path): {semantic_result.reason}")
+            self._show("supervisor", f"⚡ Fast interrupt: {semantic_result.reason}", "warning")
+            return {
+                "complete": False,
+                "needs_supervisor": True,
+                "reason": semantic_result.reason,
+                "semantic_mismatch": True,
+                "expected_app": semantic_result.expected,
+                "actual_app": semantic_result.actual
+            }
+        
+        # ========== SLOW PATH: Full Screen Analysis ==========
+        # Get current screen context
+        screen_context = self._capture_screen_context()
+        self.state.last_screen_context = screen_context
+        self.state.screen_context_history.append(screen_context)
+        
+        # Generate micro actions based on macro step + screen
+        micro_actions = self._generate_micro_actions(macro_step, screen_context)
+        
+        if not micro_actions:
+            # Executor doesn't know what to do - ask supervisor
+            return {
+                "complete": False,
+                "needs_supervisor": True,
+                "reason": f"Cannot determine micro actions for: {step_desc}. Current app: {screen_context.app_name}"
+            }
+        
+        # Check if screen matches expectations (additional validation)
+        if not self._screen_matches_expectation(screen_context, expected_context):
+            return {
+                "complete": False,
+                "needs_supervisor": True,
+                "reason": f"Screen state unexpected. Expected: {expected_context}. Got: {screen_context.app_name} - {screen_context.window_title}"
+            }
+        
+        # Execute the micro actions
+        success = self._execute_micro_actions(micro_actions)
+        
+        return {"complete": success, "needs_supervisor": not success}
+    
+    def _fast_semantic_check(self, macro_step: Dict) -> Optional['SemanticCheckResult']:
+        """
+        Fast semantic validation without LLM calls.
+        
+        Uses the semantic checker to compare:
+        - Expected app (extracted from step description)
+        - Actual app (from accessibility tree)
+        
+        Returns None if semantic checking is not available.
+        """
+        if not SEMANTIC_CHECKER_AVAILABLE:
+            return None
+        
+        try:
+            checker = get_semantic_checker()
+            result = checker.check_state_match(macro_step)
+            
+            if result.mismatch_type != SemanticMismatchType.NONE:
+                logger.debug(f"Semantic check: {result.mismatch_type.value} - {result.reason}")
+            
+            return result
+        except Exception as e:
+            logger.debug(f"Semantic check failed: {e}")
+            return None
+    
+    def _generate_micro_actions(self, macro_step: Dict, screen: ScreenContext) -> List[MicroAction]:
+        """
+        Generate specific micro actions based on macro step and current screen.
+        This is where executor intelligence lives.
+        """
+        step_desc = macro_step.get("step", "").lower()
+        app_name = screen.app_name.lower()
+        
+        self._show("executor", f"Generating micro actions for: {step_desc}", "thinking")
+        
+        # Build context for micro action generation
+        elements_summary = self._summarize_elements(screen.visible_elements[:20])
+        
+        prompt = f"""You are a MICRO EXECUTOR. Generate specific cursor/keyboard actions.
+
+MACRO STEP: {macro_step.get('step')}
+CURRENT APP: {screen.app_name}
+WINDOW: {screen.window_title}
+VISIBLE ELEMENTS (sample): {elements_summary}
+
+Generate SPECIFIC actions. Format each action as:
+- hotkey:key1,key2 (e.g., hotkey:command,space)
+- type:text to type
+- key:keyname (e.g., key:return)
+- wait:seconds
+- click:element_description (e.g., click:first search result)
+
+Output JSON:
+{{
+    "actions": [
+        {{"type": "hotkey", "params": {{"keys": ["command", "space"]}}, "description": "Open Spotlight"}},
+        {{"type": "type", "params": {{"text": "Safari"}}, "description": "Type app name"}},
+        {{"type": "key", "params": {{"key": "return"}}, "description": "Launch app"}}
+    ],
+    "requires_screen_check": false,
+    "confidence": 0.9
+}}
+
+RULES:
+1. Use keyboard shortcuts when possible (faster than clicking)
+2. On macOS: Cmd+Space for Spotlight, Cmd+L for URL bar, Cmd+T for new tab
+3. For "click:" actions, be specific about what to click
+4. Set requires_screen_check=true if you need to see result before continuing
+
+Generate micro actions:"""
+
+        try:
+            response = self.client.generate_json(prompt, temperature=0.2)
+            
+            # Use Pydantic validation for micro actions
+            try:
+                validated = MicroActionsResponse.model_validate(response)
+                confidence = validated.confidence
+                
+                if confidence < 0.5:
+                    logger.warning(f"Low confidence ({confidence:.0%}) for micro actions")
+                    return []
+                
+                micro_actions = []
+                for a in validated.actions:
+                    micro_actions.append(MicroAction(
+                        action_type=a.type,
+                        params=a.params.model_dump() if a.params else {},
+                        description=a.description,
+                        requires_screen=a.requires_screen
+                    ))
+            except Exception as validation_error:
+                logger.warning(f"Pydantic validation failed for micro actions: {validation_error}")
+                # Fallback to legacy parsing
+                actions = response.get("actions", [])
+                confidence = response.get("confidence", 0.5)
+                
+                if confidence < 0.5:
+                    logger.warning(f"Low confidence ({confidence:.0%}) for micro actions")
+                    return []
+                
+                micro_actions = []
+                for a in actions:
+                    micro_actions.append(MicroAction(
+                        action_type=a.get("type", "unknown"),
+                        params=a.get("params", {}),
+                        description=a.get("description", ""),
+                        requires_screen=a.get("requires_screen", False)
+                    ))
+            
+            for ma in micro_actions:
+                self._show("executor", f"→ {ma.action_type}: {ma.description}", "action")
+            
+            return micro_actions
+            
+        except Exception as e:
+            logger.error(f"Micro action generation failed: {e}")
+            return []
+    
+    def _execute_micro_actions(self, actions: List[MicroAction]) -> bool:
+        """Execute a list of micro actions with event-driven waiting."""
+        import pyautogui
+        
+        for action in actions:
+            start_time = time.time()
+            try:
+                self._show("executor", f"Executing: {action.description}", "action")
+                
+                # Log action start to replay system
+                if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
+                    self._replay_logger.log_action(action.description, action.action_type)
+                
+                if action.action_type == "hotkey":
+                    keys = action.params.get("keys", [])
+                    pyautogui.hotkey(*keys)
+                    self._smart_wait_after("hotkey")
+                    
+                    # Log hotkey to replay
+                    if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
+                        self._replay_logger.log_hotkey(keys)
+                    
+                elif action.action_type == "type":
+                    text = action.params.get("text", "")
+                    pyautogui.write(text, interval=0.02)
+                    self._smart_wait_after("type")
+                    
+                    # Log text typing to replay
+                    if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
+                        self._replay_logger.log_text_type(text)
+                    
+                elif action.action_type == "key":
+                    key = action.params.get("key", "")
+                    pyautogui.press(key)
+                    self._smart_wait_after("key")
+                    
+                    # Log key press to replay
+                    if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
+                        self._replay_logger.log_key_press(key)
+                    
+                elif action.action_type == "wait":
+                    secs = action.params.get("seconds", 0.5)
+                    # Use event-driven wait if available
+                    if self._ui_wait and secs >= 0.3:
+                        result = self._ui_wait.wait_for_ui_stable(
+                            max_wait_ms=int(secs * 1000),
+                            stability_ms=150
+                        )
+                        logger.debug(f"Smart wait: requested {secs}s, actual {result.waited_ms:.0f}ms")
+                    else:
+                        time.sleep(secs)
+                    
+                elif action.action_type == "click":
+                    # Use vision executor for click actions
+                    element_desc = action.params.get("element", action.description)
+                    click_result = self._vision_click(element_desc)
+                    if not click_result.get("success"):
+                        logger.warning(f"Click failed: {click_result.get('error')}")
+                        # Log failure to replay
+                        if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
+                            duration_ms = (time.time() - start_time) * 1000
+                            self._replay_logger.log_action_complete(action.description, False, duration_ms, click_result.get('error'))
+                        return False
+                    self._smart_wait_after("click")
+                
+                # Record action
+                self.state.executed_actions.append({
+                    "type": action.action_type,
+                    "params": action.params,
+                    "description": action.description,
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+                # Log action completion to replay
+                if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
+                    duration_ms = (time.time() - start_time) * 1000
+                    self._replay_logger.log_action_complete(action.description, True, duration_ms)
+                
+            except Exception as e:
+                logger.error(f"Micro action failed: {action.description} - {e}")
+                # Log failure to replay
+                if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
+                    duration_ms = (time.time() - start_time) * 1000
+                    self._replay_logger.log_action_complete(action.description, False, duration_ms, str(e))
+                return False
+        
+        return True
+    
+    def _smart_wait_after(self, action_type: str):
+        """
+        Event-driven wait after an action completes.
+        Uses UI stability detection instead of fixed sleep.
+        """
+        if self._ui_wait:
+            try:
+                result = self._ui_wait.smart_wait_after_action(action_type)
+                logger.debug(f"Post-{action_type} wait: {result.waited_ms:.0f}ms")
+            except Exception as e:
+                logger.debug(f"Smart wait failed, using fallback: {e}")
+                time.sleep(0.1)
+        else:
+            # Fallback to fixed sleeps
+            if action_type == "type":
+                time.sleep(0.05)
+            elif action_type == "click":
+                time.sleep(0.15)
+            else:
+                time.sleep(0.1)
+    
+    def _vision_click(self, element_description: str) -> Dict:
+        """Handle click actions that need screen analysis."""
+        try:
+            from ..agents.vision_executor import execute_vision_action
+            from ..utils.gemini_client import GeminiCLI
+            
+            # Create a minimal CLI for vision
+            cli = GeminiCLI()
+            return execute_vision_action(cli, f"click {element_description}")
+        except Exception as e:
+            logger.error(f"Vision click failed: {e}")
+            return {"success": False, "error": str(e)}
+    
+    # ========== SUPERVISOR: ADAPTIVE CONTROL ==========
+    
+    def _supervisor_guide_executor(self, macro_step: Dict, reason: str) -> Dict:
+        """
+        Supervisor guides executor when it's stuck or uncertain.
+        Can provide new actions, skip step, or abort.
+        
+        DUAL-PATH VALIDATION:
+        For semantic mismatches (wrong app active), we can often 
+        generate corrective actions without an LLM call.
+        """
+        self.state.supervisor_interventions += 1
+        step_desc = macro_step.get("step", "Unknown")
+        
+        logger.info(f"🔮 Supervisor intervening: {reason}")
+        self._show("supervisor", f"Guiding executor: {reason}", "intervention")
+        
+        # ========== FAST PATH: Handle semantic mismatches without LLM ==========
+        if "semantic_mismatch" in reason.lower() or "app mismatch" in reason.lower():
+            fast_correction = self._generate_fast_correction(macro_step, reason)
+            if fast_correction:
+                logger.info(f"⚡ Fast correction generated (no LLM call)")
+                return fast_correction
+        
+        # ========== SLOW PATH: Full LLM analysis ==========
+        # Get fresh screen context
+        screen = self._capture_screen_context()
+        elements_summary = self._summarize_elements(screen.visible_elements[:30])
+        
+        prompt = f"""You are the SUPERVISOR. The executor is stuck and needs guidance.
+
+ORIGINAL TASK: {self.state.task}
+CURRENT MACRO STEP: {step_desc}
+REASON FOR INTERVENTION: {reason}
+
+CURRENT SCREEN STATE:
+- App: {screen.app_name}
+- Window: {screen.window_title}
+- Visible Elements: {elements_summary}
+
+ACTIONS EXECUTED SO FAR: {len(self.state.executed_actions)}
+
+DECIDE what to do:
+1. Provide specific actions to achieve the step
+2. Skip this step if not needed
+3. Abort if task seems impossible
+
+Output JSON:
+{{
+    "decision": "guide" | "skip" | "abort",
+    "reason": "Explanation",
+    "actions": [  // Only if decision is "guide"
+        {{"type": "hotkey", "params": {{"keys": ["command", "l"]}}, "description": "Focus URL bar"}}
+    ],
+    "note": "Additional context for learning"
+}}
+
+Supervisor decision:"""
+
+        try:
+            response = self.client.generate_json(prompt, temperature=0.3)
+            
+            # Use Pydantic validation for supervisor guidance
+            try:
+                validated = PydanticSupervisorGuidance.model_validate(response)
+                decision = validated.decision.value
+                reason = validated.reason
+                note = validated.note or ""
+                validated_actions = validated.actions
+            except Exception as validation_error:
+                logger.warning(f"Pydantic validation failed for supervisor guidance: {validation_error}")
+                decision = response.get("decision", "abort")
+                reason = response.get("reason", "Unknown")
+                note = response.get("note", "")
+                validated_actions = None
+            
+            self._show("supervisor", f"Decision: {decision} - {reason}", "decision")
+            
+            if note:
+                self.state.supervisor_notes.append(note)
+            
+            if decision == "abort":
+                return {"abort": True, "reason": reason}
+            elif decision == "skip":
+                return {"skip": True, "reason": reason}
+            else:
+                # Convert response actions to MicroActions
+                new_actions = []
+                if validated_actions:
+                    for a in validated_actions:
+                        new_actions.append(MicroAction(
+                            action_type=a.type,
+                            params=a.params.model_dump() if a.params else {},
+                            description=a.description
+                        ))
+                else:
+                    for a in response.get("actions", []):
+                        new_actions.append(MicroAction(
+                            action_type=a.get("type", "unknown"),
+                            params=a.get("params", {}),
+                            description=a.get("description", "")
+                        ))
+                return {"new_actions": new_actions}
+                
+        except Exception as e:
+            logger.error(f"Supervisor guidance failed: {e}")
+            return {"abort": True, "reason": f"Supervisor error: {e}"}
+    
+    def _generate_fast_correction(self, macro_step: Dict, reason: str) -> Optional[Dict]:
+        """
+        Generate corrective actions for semantic mismatches without LLM.
+        
+        This is the FAST PATH of dual-path validation.
+        Handles common cases like wrong app being active.
+        
+        Returns:
+            Dict with 'new_actions' if correction is possible, None otherwise.
+        """
+        if not SEMANTIC_CHECKER_AVAILABLE:
+            return None
+        
+        try:
+            step_desc = macro_step.get("step", "").lower()
+            
+            # Extract expected app from the step
+            from ..supervisor.semantic_checker import extract_expected_app, normalize_app_name
+            expected_app = extract_expected_app(step_desc)
+            
+            if not expected_app:
+                return None  # Can't determine expected app, fall back to LLM
+            
+            # Generate actions to open/switch to the expected app
+            normalized = normalize_app_name(expected_app)
+            
+            # Common correction: Use Spotlight to open the app
+            correction_actions = [
+                MicroAction(
+                    action_type="hotkey",
+                    params={"keys": ["command", "space"]},
+                    description=f"Open Spotlight to launch {expected_app}"
+                ),
+                MicroAction(
+                    action_type="wait",
+                    params={"seconds": 0.3},
+                    description="Wait for Spotlight"
+                ),
+                MicroAction(
+                    action_type="type",
+                    params={"text": expected_app},
+                    description=f"Type '{expected_app}' in Spotlight"
+                ),
+                MicroAction(
+                    action_type="wait",
+                    params={"seconds": 0.2},
+                    description="Wait for search results"
+                ),
+                MicroAction(
+                    action_type="key",
+                    params={"key": "return"},
+                    description=f"Launch {expected_app}"
+                ),
+                MicroAction(
+                    action_type="wait",
+                    params={"seconds": 0.5},
+                    description=f"Wait for {expected_app} to open"
+                ),
+            ]
+            
+            self._show("supervisor", 
+                      f"⚡ Fast correction: opening {expected_app} via Spotlight", 
+                      "fast_fix")
+            
+            return {
+                "new_actions": correction_actions,
+                "fast_path": True,
+                "correction_type": "app_switch",
+                "target_app": expected_app
+            }
+            
+        except Exception as e:
+            logger.debug(f"Fast correction failed: {e}")
+            return None  # Fall back to LLM
+    
+    def _supervisor_verify_completion(self) -> Dict:
+        """
+        Supervisor verifies if the task is actually complete.
+        Takes screen info and analyzes against success criteria.
+        """
+        logger.info("🔍 Supervisor verifying task completion...")
+        self._show("supervisor", "Verifying task completion", "verifying")
+        
+        # Get final screen state
+        screen = self._capture_screen_context()
+        elements_summary = self._summarize_elements(screen.visible_elements[:30])
+        
+        success_criteria = self.state.macro_plan.success_criteria if self.state.macro_plan else "Task completed"
+        expected_outcome = self.state.macro_plan.expected_outcome if self.state.macro_plan else "Goal achieved"
+        
+        prompt = f"""You are the SUPERVISOR. Verify if the task is ACTUALLY complete.
+
+ORIGINAL TASK: {self.state.task}
+EXPECTED OUTCOME: {expected_outcome}
+SUCCESS CRITERIA: {success_criteria}
+
+FINAL SCREEN STATE:
+- App: {screen.app_name}  
+- Window: {screen.window_title}
+- Visible Elements: {elements_summary}
+
+EXECUTION SUMMARY:
+- Macro Steps Completed: {self.state.current_macro_step_idx}/{len(self.state.macro_plan.macro_steps) if self.state.macro_plan else 0}
+- Total Actions: {len(self.state.executed_actions)}
+- Supervisor Interventions: {self.state.supervisor_interventions}
+
+ANALYZE the screen state against the success criteria.
+Is the task ACTUALLY complete?
+
+Output JSON:
+{{
+    "complete": true | false,
+    "confidence": 0.0-1.0,
+    "reason": "Explanation of decision",
+    "what_is_missing": "If incomplete, what needs to be done",
+    "corrective_steps": [  // Only if incomplete
+        {{"step": "What to do", "context": "What to look for"}}
+    ]
+}}
+
+Verification result:"""
+
+        try:
+            response = self.client.generate_json(prompt, temperature=0.2)
+            
+            # Use Pydantic validation for verification result
+            try:
+                validated = PydanticVerificationResult.model_validate(response)
+                complete = validated.complete
+                confidence = validated.confidence
+                reason = validated.reason
+                what_is_missing = validated.what_is_missing
+                corrective_steps = [step.model_dump() for step in validated.corrective_steps]
+            except Exception as validation_error:
+                logger.warning(f"Pydantic validation failed for verification: {validation_error}")
+                complete = response.get("complete", False)
+                confidence = response.get("confidence", 0.0)
+                reason = response.get("reason", "Unknown")
+                what_is_missing = response.get("what_is_missing", "")
+                corrective_steps = response.get("corrective_steps", [])
+            
+            self._show("supervisor", 
+                      f"{'✅ Complete' if complete else '❌ Incomplete'} ({confidence:.0%}): {reason}", 
+                      "verification")
+            
+            if complete and confidence >= 0.7:
+                logger.info(f"✅ Task verified complete: {reason}")
+                return {"complete": True, "confidence": confidence}
+            else:
+                logger.warning(f"⚠️ Task not complete: {what_is_missing or 'Unknown'}")
+                return {
+                    "complete": False,
+                    "reason": reason,
+                    "what_is_missing": what_is_missing or "",
+                    "corrective_steps": corrective_steps
+                }
+                
+        except Exception as e:
+            logger.error(f"Verification failed: {e}")
+            return {"complete": False, "reason": f"Verification error: {e}"}
+    
+    def _supervisor_evolve_task(self, verification: Dict) -> bool:
+        """
+        Supervisor takes over planning when verification fails.
+        Tells executor its mistakes and what to do now.
+        This enables real-time task evolution.
+        """
+        self.state.evolution_count += 1
+        
+        logger.info("🔄 Supervisor evolving task...")
+        self._show("supervisor", "Evolving task based on current state", "evolving")
+        
+        what_is_missing = verification.get("what_is_missing", "Unknown")
+        corrective_steps = verification.get("corrective_steps", [])
+        
+        # If we have corrective steps, add them to the plan
+        if corrective_steps:
+            logger.info(f"📝 Adding {len(corrective_steps)} corrective steps")
+            
+            # Convert corrective steps to macro steps
+            if self.state.macro_plan:
+                self.state.macro_plan.macro_steps.extend(corrective_steps)
+            
+            for i, step in enumerate(corrective_steps, 1):
+                self._show("supervisor", f"New Step {i}: {step.get('step', 'Unknown')}", "evolution")
+            
+            return True
+        
+        # Otherwise, generate a new micro plan from current state
+        screen = self._capture_screen_context()
+        
+        prompt = f"""You are the SUPERVISOR taking over planning.
+The executor failed to complete the task. Analyze what went wrong and create a NEW plan.
+
+ORIGINAL TASK: {self.state.task}
+WHAT IS MISSING: {what_is_missing}
+
+CURRENT STATE:
+- App: {screen.app_name}
+- Window: {screen.window_title}
+
+EXECUTOR MISTAKES ANALYSIS:
+{self._analyze_executor_mistakes()}
+
+Create new steps to complete the task from current state.
+
+Output JSON:
+{{
+    "executor_mistakes": "What the executor did wrong",
+    "correction_message": "What executor should do differently",
+    "new_steps": [
+        {{"step": "What to do now", "context": "What to look for"}}
+    ]
+}}
+
+Evolution plan:"""
+
+        try:
+            response = self.client.generate_json(prompt, temperature=0.3)
+            
+            mistakes = response.get("executor_mistakes", "Unknown")
+            correction = response.get("correction_message", "")
+            new_steps = response.get("new_steps", [])
+            
+            logger.warning(f"📌 Executor mistakes: {mistakes}")
+            self._show("supervisor", f"Executor error: {mistakes}", "correction")
+            self._show("supervisor", f"Correction: {correction}", "correction")
+            
+            if new_steps and self.state.macro_plan:
+                self.state.macro_plan.macro_steps.extend(new_steps)
+                logger.info(f"📝 Added {len(new_steps)} evolved steps")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Task evolution failed: {e}")
+            return False
+    
+    def _analyze_executor_mistakes(self) -> str:
+        """Analyze what went wrong in execution."""
+        if not self.state.executed_actions:
+            return "No actions were executed."
+        
+        summary = []
+        for i, action in enumerate(self.state.executed_actions[-10:], 1):
+            summary.append(f"{i}. {action.get('type')}: {action.get('description')}")
+        
+        return "\n".join(summary)
+    
+    # ========== SCREEN CONTEXT ==========
+    
+    def _capture_screen_context(self) -> ScreenContext:
+        """Capture current screen state for analysis."""
+        try:
+            from ..utils.accessibility_reader import get_frontmost_app, get_ui_elements_applescript
+            
+            app_info = get_frontmost_app()
+            elements = get_ui_elements_applescript(max_elements=50)
+            
+            return ScreenContext(
+                app_name=app_info.get("app", "Unknown"),
+                window_title=app_info.get("window", ""),
+                visible_elements=elements
+            )
+        except Exception as e:
+            logger.warning(f"Screen capture failed: {e}")
+            return ScreenContext(
+                app_name="Unknown",
+                window_title="",
+                visible_elements=[]
+            )
+    
+    def _screen_matches_expectation(self, screen: ScreenContext, expected: str) -> bool:
+        """Check if screen matches expected context."""
+        if not expected:
+            return True
+        
+        expected_lower = expected.lower()
+        app_lower = screen.app_name.lower()
+        window_lower = screen.window_title.lower()
+        
+        # Check if expected keywords are in app or window
+        keywords = expected_lower.split()
+        for keyword in keywords:
+            if keyword in app_lower or keyword in window_lower:
+                return True
+        
+        return False
+    
+    def _summarize_elements(self, elements: List[Dict]) -> str:
+        """Create a summary of visible UI elements."""
+        if not elements:
+            return "(no elements detected)"
+        
+        summary = []
+        for e in elements[:15]:
+            role = e.get("role", "unknown")
+            name = e.get("name", "")[:30]
+            if name:
+                summary.append(f"{role}: {name}")
+        
+        return ", ".join(summary) if summary else "(no named elements)"
+    
+    # ========== HELPERS ==========
+    
+    def _show(self, component: str, message: str, msg_type: str = "info"):
+        """Show message in thinking window."""
+        if not self.enable_thinking_window:
+            return
+            
+        try:
+            if component == "planner":
+                show_planner_thinking(message)
+            elif component == "executor":
+                show_executor_thinking(message)
+            elif component == "supervisor":
+                show_supervisor_thinking(message)
+            else:
+                show_thinking(component, message, msg_type)
+        except:
+            pass

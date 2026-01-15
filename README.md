@@ -11,6 +11,7 @@ Refactored implementation based on Agent-S patterns with **intelligent self-evol
 - **Advanced Cursor Movement**: macOS keyboard shortcuts for 10-100x speed improvement
 - **Human-Like Text Manipulation**: Efficient text editing like a power user
 - **💭 Thinking Window**: Real-time visualization of AI reasoning (like Claude/ChatGPT thinking models)
+- **📁 Context-Aware Memory**: Long-term memory of user files and resources (see below)
 
 ## Components
 - **Planner**: Gemini 3 Pro (CLI) - Task decomposition with evolved prompts
@@ -55,6 +56,32 @@ Initial Success Rate: 70%  →  After Evolution: 90%+
 
 See [PROMPT_SYSTEM.md](PROMPT_SYSTEM.md) for complete documentation.
 
+## 📁 Context-Aware Memory
+
+The agent has **long-term memory** of your files and resources. When you say "Send the report to John," it knows where "report" lives based on previous successful tasks.
+
+### Features
+
+- **Learns from Usage**: Every successful task teaches the agent about your files
+- **Semantic Search**: Uses FAISS embeddings to find related resources
+- **Ambiguous Reference Resolution**: "the report" → `~/Documents/Reports/Q4_report.pdf`
+- **Contact Memory**: Remembers who you communicate with
+- **Planner Integration**: Automatically enriches tasks with resolved context
+
+### Example
+
+```bash
+# First time: "create quarterly report in Documents/Reports folder"
+# Agent learns: "report" → ~/Documents/Reports/quarterly_report.pdf
+
+# Later: "send the report to marketing"
+# Agent knows: report = ~/Documents/Reports/quarterly_report.pdf
+```
+
+### Data Storage
+
+Context memory is stored in `data/context_memory/` and bootstraps from `feedback_log.json`.
+
 ## 📁 Project Structure
 
 ```
@@ -70,9 +97,11 @@ houdini-agent/
 │   └── utils/
 │       ├── prompt_loader.py    # Prompt management
 │       ├── prompt_evolution.py # Evolution engine
+│       ├── context_memory.py   # Long-term file/resource memory
 │       └── prompt_stats.py     # Statistics
 ├── data/
 │   ├── feedback_log.json       # Execution feedback
+│   ├── context_memory/         # File/resource context memory
 │   └── prompt_evolution_log.json # Evolution history
 └── examples/                   # Usage examples
 ```

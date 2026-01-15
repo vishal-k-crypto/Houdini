@@ -6,6 +6,14 @@ pillow>=10.0.0
 llama-cpp-python>=0.2.90
 playwright>=1.48.0
 python-dotenv>=1.0.0
+google-genai>=0.2.0
+
+# Data Validation
+pydantic>=2.0.0
+
+# Vector Database for Lesson Store (RAG-based learning)
+# Using FAISS for efficient similarity search (ChromaDB has dependency conflicts)
+faiss-cpu>=1.7.0
 
 # NOTE: Ollama is required but installed separately (not a Python package)
 # Install from: https://ollama.ai or run: brew install ollama
@@ -19,3 +27,41 @@ pyobjc-framework-ApplicationServices>=10.0
 # Human-like cursor control
 numpy>=1.24.0
 scipy>=1.11.0
+
+# Probability Model for flexible task execution (NEW)
+# These enable intelligent handling of incomplete/ambiguous task specs
+scikit-fuzzy>=0.5.0    # Fuzzy logic for macro-micro spectrum
+pgmpy>=1.0.0           # Bayesian networks for probabilistic reasoning
+networkx>=3.0          # Required by pgmpy
+
+# Execution Confidence Model (NEW)
+# Enables confidence-based action execution with calibration and learning
+# Uses built-in algorithms inspired by:
+# - uncertainty-toolbox: calibration metrics
+# - uncertainty-calibration: Platt scaling, isotonic regression
+# - mabwiser: Thompson Sampling for exploration/exploitation
+# No additional packages needed - uses numpy which is already included
+
+# LangGraph for state management and cyclic agent execution
+# Replaces custom loop coordinators with declarative graph-based execution
+# Benefits: checkpointing, human-in-the-loop, crash recovery, visualization
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# Textual TUI Framework (replaces Tkinter for thinking window)
+# Beautiful terminal UI with hacker aesthetic
+# Provides: rich text, interactive widgets, CSS-like styling
+textual>=0.45.0
+
+# OmniParser V2 - Enhanced UI element detection (OPTIONAL)
+# Superior parsing for non-accessible apps: Adobe, Electron, Qt, games
+# Requires CUDA for optimal performance (~0.8s/frame on RTX 4090)
+# CPU mode is slower (~5-10s/frame) but still functional
+# NOTE: These are heavy dependencies (~2GB models). Lazy-loaded only when needed.
+# To enable: pip install torch ultralytics transformers huggingface-hub easyocr supervision
+# torch>=2.0.0
+# ultralytics>=8.3.70  # YOLOv8 for icon detection
+# transformers>=4.30.0  # Florence-2 for captioning  
+# huggingface-hub>=0.20.0  # Model downloads
+# easyocr>=1.7.0  # OCR text extraction
+# supervision>=0.18.0  # Bounding box utilities
