@@ -41,15 +41,19 @@ except ImportError:
     PREDICTOR_AVAILABLE = False
     logger.warning("Coordinate predictor not available")
 
-# Try to import OmniParser (superior UI parsing for non-accessible apps)
+# Try to import LocalVisionLocalizer (hybrid Apple Vision + UI-TARS MLX)
+# This is the PRIMARY vision strategy for non-accessible apps on Mac
 try:
-    from ..utils.omniparser_client import is_omniparser_available
-    OMNIPARSER_AVAILABLE = is_omniparser_available()
-    if OMNIPARSER_AVAILABLE:
-        logger.info("OmniParser available for non-accessible apps")
+    from ..utils.local_vision_localizer import (
+        LocalVisionLocalizer,
+        get_local_localizer,
+        find_element_locally
+    )
+    LOCAL_VISION_AVAILABLE = True
+    logger.info("LocalVisionLocalizer available (Apple Vision + UI-TARS)")
 except ImportError:
-    OMNIPARSER_AVAILABLE = False
-    logger.info("OmniParser not available (optional enhancement)")
+    LOCAL_VISION_AVAILABLE = False
+    logger.info("LocalVisionLocalizer not available - install pyobjc-framework-Vision and mlx-vlm")
 
 
 def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts: int = 3,
@@ -66,8 +70,9 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
     
     Uses a multi-strategy approach:
     1. Smart heuristic analysis via accessibility API (fast, precise)
-    2. VLM screenshot analysis (universal, works for any app)
-    3. LLM-guided targeting (text-based fallback)
+    2. Local Vision Localizer (Apple Vision + UI-TARS MLX) for non-accessible elements
+    3. VLM screenshot analysis (universal, works for any app)
+    4. LLM-guided targeting (text-based fallback)
     
     Args:
         cli: Gemini CLI (only for complex fallback cases)
@@ -135,16 +140,16 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
     # Get dynamic match threshold from probability model
     min_match_prob = exec_params.get('min_match_probability', 0.5)
     
-    # Strategy 2: OmniParser (for non-accessible apps like Adobe, Electron, Qt)
-    # Activates when accessibility returns zero elements
-    if OMNIPARSER_AVAILABLE and result.get("reason") == "zero_elements":
-        logger.info(f"  🔬 Using OmniParser for non-accessible app (threshold: {min_match_prob:.0%})...")
-        omni_result = _omniparser_fallback(action_description, min_match_prob)
+    # Strategy 2: Local Vision Localizer (Apple Vision + UI-TARS MLX)
+    # Hardware-accelerated on Apple Silicon - best for non-accessible apps
+    if LOCAL_VISION_AVAILABLE and result.get("reason") == "zero_elements":
+        logger.info(f"  🍎 Using Local Vision Localizer (threshold: {min_match_prob:.0%})...")
+        local_result = _local_vision_fallback(action_description, min_match_prob)
         
-        if omni_result.get("success"):
-            omni_result["method"] = "omniparser"
-            omni_result["flexibility"] = flexibility_info
-            return omni_result
+        if local_result.get("success"):
+            local_result["method"] = "local_vision"
+            local_result["flexibility"] = flexibility_info
+            return local_result
     
     # Strategy 3: Fast coordinate prediction (universal - works for any app)
     if PREDICTOR_AVAILABLE:
@@ -175,12 +180,15 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
     return result
 
 
-def _omniparser_fallback(action_description: str, min_match_probability: float = 0.5) -> Dict:
+def _local_vision_fallback(action_description: str, min_match_probability: float = 0.5) -> Dict:
     """
-    Use OmniParser to find and click UI elements.
+    Use Local Vision Localizer (Apple Vision + UI-TARS MLX) to find and click UI elements.
     
-    OmniParser uses YOLOv8 + Florence-2 for superior UI detection on
-    non-accessible apps like Adobe Creative Cloud, Electron apps, etc.
+    Hybrid approach:
+    1. Apple Vision Framework - Fast geometric detection of UI rectangles (sub-millisecond)
+    2. UI-TARS via MLX-VLM - Semantic grounding for complex elements
+    
+    Hardware-accelerated on Apple Silicon Neural Engine.
     
     Args:
         action_description: What element to find and click
@@ -196,47 +204,34 @@ def _omniparser_fallback(action_description: str, min_match_probability: float =
         }
     """
     import pyautogui
-    import io
     
     try:
-        from ..utils.omniparser_screen_parser import get_omniparser
-    except ImportError:
-        return {"success": False, "error": "OmniParser not available"}
-    
-    try:
-        # Capture current screen
-        screenshot = pyautogui.screenshot()
-        buffer = io.BytesIO()
-        screenshot.save(buffer, format='PNG')
-        screenshot_bytes = buffer.getvalue()
+        localizer = get_local_localizer()
+        result = find_element_locally(action_description, min_confidence=min_match_probability)
         
-        # Get parser and find element
-        parser = get_omniparser()
-        match = parser.find_element_by_description(screenshot_bytes, action_description)
-        
-        if match is None:
-            logger.warning(f"  OmniParser: No element matching '{action_description}'")
+        if not result.found:
+            logger.warning(f"  LocalVision: No element matching '{action_description}'")
             return {
                 "success": False,
-                "match_probability": 0.0,
+                "match_probability": result.confidence,
                 "error": "No matching element found"
             }
         
         # Check if match meets threshold
-        if match.score < min_match_probability:
-            logger.warning(f"  OmniParser: Match score {match.score:.0%} below threshold {min_match_probability:.0%}")
+        if result.confidence < min_match_probability:
+            logger.warning(f"  LocalVision: Match confidence {result.confidence:.0%} below threshold {min_match_probability:.0%}")
             return {
                 "success": False,
-                "match_probability": match.score,
-                "element": str(match.element),
-                "coordinates": match.center,
-                "error": f"Match confidence too low: {match.score:.0%}"
+                "match_probability": result.confidence,
+                "element": result.element_description,
+                "coordinates": (result.x, result.y),
+                "error": f"Match confidence too low: {result.confidence:.0%}"
             }
         
         # Execute click
-        x, y = match.center
-        logger.info(f"  OmniParser: Found '{match.element.caption or match.element.ocr_text}' at ({x}, {y})")
-        logger.info(f"  Match score: {match.score:.0%}, reason: {match.match_reason}")
+        x, y = result.x, result.y
+        logger.info(f"  LocalVision: Found '{result.element_description}' at ({x}, {y})")
+        logger.info(f"  Method: {result.method}, Confidence: {result.confidence:.0%}")
         
         # Move and click with natural motion
         current_x, current_y = pyautogui.position()
@@ -246,17 +241,17 @@ def _omniparser_fallback(action_description: str, min_match_probability: float =
         pyautogui.moveTo(x, y, duration=duration)
         pyautogui.click()
         
-        logger.info(f"  ✅ OmniParser clicked: [{match.element.id}] at ({x}, {y})")
+        logger.info(f"  ✅ LocalVision clicked at ({x}, {y})")
         
         return {
             "success": True,
             "coordinates": (x, y),
-            "match_probability": match.score,
-            "element": str(match.element),
+            "match_probability": result.confidence,
+            "element": result.element_description,
         }
         
     except Exception as e:
-        logger.error(f"  OmniParser error: {e}")
+        logger.error(f"  LocalVision error: {e}")
         return {"success": False, "error": str(e)}
 
 

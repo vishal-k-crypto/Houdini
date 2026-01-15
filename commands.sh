@@ -14,13 +14,25 @@ pip install -r requirements.txt
 # update the package:
 # pip install --upgrade google-genai
 
-# OmniParser V2 (OPTIONAL - for non-accessible apps like Adobe, Electron)
-# Requires CUDA GPU for optimal performance (~0.8s vs ~5s on CPU)
-# Step 1: Install dependencies
-pip install torch ultralytics transformers huggingface-hub easyocr supervision
 
-# Step 2: Download model weights (~2GB)
-./scripts/download_omniparser.sh
+# ============================================================
+# LOCAL VISION LOCALIZER (RECOMMENDED for Mac)
+# ============================================================
+# Hybrid Apple Vision + UI-TARS MLX for precise pixel localization
+# Benefits: Hardware-accelerated, no cloud latency, semantic precision
+
+# Step 1: Apple Vision Framework (usually auto-installed with pyobjc)
+pip install pyobjc-framework-Vision
+
+# Step 2: UI-TARS via MLX-VLM (OPTIONAL - for semantic grounding)
+# Only needed for complex non-accessible elements (Adobe icons, Electron apps)
+pip install mlx-vlm
+
+# Step 3: Download UI-TARS model (~4GB) - only if you installed mlx-vlm
+python -c "from mlx_vlm import load; load('mlx-community/UI-TARS-7B-SFT-4bit')"
+
+# Test your setup:
+python test_local_vision.py
 
 
 # ============================================================

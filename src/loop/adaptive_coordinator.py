@@ -346,6 +346,7 @@ class AdaptiveLoopCoordinator:
                         self._execute_micro_actions(guidance["new_actions"])
                     
                 if step_result.get("complete"):
+                    self._show("executor", f"✅ Step {self.state.current_macro_step_idx + 1} complete", "success")
                     self.state.current_macro_step_idx += 1
                 
                 # Event-driven wait between iterations instead of fixed sleep
@@ -533,6 +534,9 @@ Keep steps BROAD and CONCEPTUAL. The executor will figure out the details.
 Generate the macro plan:"""
         
         try:
+            # Show that we're waiting for LLM to plan
+            self._show("planner", "⏳ Creating macro plan...", "thinking")
+            
             response = self.client.generate_json(prompt, temperature=0.3)
             
             # Use Pydantic validation for macro plan response
@@ -581,14 +585,15 @@ Generate the macro plan:"""
         step_desc = macro_step.get("step", "Unknown step")
         expected_context = macro_step.get("context", "")
         
-        self._show("executor", f"Processing: {step_desc}", "executing")
+        # Clear status message for this step
+        self._show("executor", f"━━━ Step: {step_desc} ━━━", "executing")
         
         # ========== FAST PATH: Semantic Check (no LLM) ==========
         # Check for obvious mismatches before any expensive operations
         semantic_result = self._fast_semantic_check(macro_step)
         if semantic_result and semantic_result.should_interrupt:
             logger.warning(f"⚡ Semantic mismatch detected (fast path): {semantic_result.reason}")
-            self._show("supervisor", f"⚡ Fast interrupt: {semantic_result.reason}", "warning")
+            self._show("supervisor", f"⚡ Wrong app/window: {semantic_result.reason}", "warning")
             return {
                 "complete": False,
                 "needs_supervisor": True,
@@ -658,13 +663,16 @@ Generate the macro plan:"""
         Generate specific micro actions based on macro step and current screen.
         This is where executor intelligence lives.
         """
-        step_desc = macro_step.get("step", "").lower()
+        step_desc = macro_step.get("step", "")
         app_name = screen.app_name.lower()
         
-        self._show("executor", f"Generating micro actions for: {step_desc}", "thinking")
+        self._show("executor", f"🧠 Thinking about: {step_desc[:50]}...", "thinking")
         
         # Build context for micro action generation
         elements_summary = self._summarize_elements(screen.visible_elements[:20])
+        
+        # Show current context
+        self._show("executor", f"📍 Current app: {screen.app_name} | Window: {screen.window_title[:40]}", "info")
         
         prompt = f"""You are a MICRO EXECUTOR. Generate specific cursor/keyboard actions.
 
@@ -711,7 +719,14 @@ CRITICAL RULES:
 Generate micro actions:"""
 
         try:
+            # Show that we're waiting for LLM
+            self._show("executor", "⏳ Planning actions...", "thinking")
+            llm_start = time.time()
+            
             response = self.client.generate_json(prompt, temperature=0.2)
+            
+            llm_duration = time.time() - llm_start
+            logger.debug(f"LLM micro-action generation took {llm_duration:.1f}s")
             
             # Use Pydantic validation for micro actions
             try:
@@ -749,8 +764,12 @@ Generate micro actions:"""
                         requires_screen=a.get("requires_screen", False)
                     ))
             
-            for ma in micro_actions:
-                self._show("executor", f"→ {ma.action_type}: {ma.description}", "action")
+            # Don't show all actions upfront - show them when executing
+            # This prevents the "thinking ahead of execution" disconnect
+            # But DO show a brief summary so user knows what will happen
+            action_types = [ma.action_type for ma in micro_actions]
+            action_summary = f"✓ Plan ready: {len(micro_actions)} actions ({', '.join(action_types[:3])}{'...' if len(action_types) > 3 else ''})"
+            self._show("executor", action_summary, "success")
             
             return micro_actions
             
@@ -767,11 +786,17 @@ Generate micro actions:"""
         expected_app = None
         last_activated_app = None
         
-        for action in actions:
+        total_actions = len(actions)
+        for action_idx, action in enumerate(actions, 1):
             start_time = time.time()
             try:
+                # Show what we're about to do FIRST (before any checks)
+                action_label = f"[{action_idx}/{total_actions}] {action.action_type}: {action.description}"
+                self._show("executor", f"▶ {action_label}", "action")
+                
                 # ========== CONFIDENCE GATING ==========
                 # Rate action before execution using the confidence model
+                rating = None
                 if CONFIDENCE_MODEL_AVAILABLE:
                     context = {
                         "current_app": self._get_current_app_name(),
@@ -784,12 +809,11 @@ Generate micro actions:"""
                     )
                     
                     logger.info(f"📊 Action confidence: {rating.score:.1f}/10 ({rating.level.value})")
-                    self._show("executor", f"Confidence: {rating.score:.1f}/10", "info")
                     
                     # Defer to supervisor if confidence too low
                     if rating.score < 3.0:
                         logger.warning(f"⚠️ Low confidence ({rating.score:.1f}), deferring to supervisor")
-                        self._show("executor", f"Low confidence - needs supervisor", "warning")
+                        self._show("executor", f"⚠️ Low confidence ({rating.score:.1f}) - needs help", "warning")
                         # Store the rating for the failed action to learn from
                         self.state.executed_actions.append({
                             "type": action.action_type,
@@ -800,10 +824,6 @@ Generate micro actions:"""
                             "deferred": True
                         })
                         return False  # Will trigger supervisor guidance
-                else:
-                    rating = None
-                
-                self._show("executor", f"Executing: {action.description}", "action")
                 
                 # Log action start to replay system
                 if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
@@ -929,14 +949,19 @@ Generate micro actions:"""
                             return False
                 
                 # Record action
+                duration_ms = (time.time() - start_time) * 1000
                 self.state.executed_actions.append({
                     "type": action.action_type,
                     "params": action.params,
                     "description": action.description,
                     "timestamp": datetime.now().isoformat(),
                     "confidence_score": rating.score if rating else None,
-                    "success": True
+                    "success": True,
+                    "duration_ms": duration_ms
                 })
+                
+                # Show completion in thinking window
+                self._show("executor", f"✓ Done ({duration_ms:.0f}ms)", "success")
                 
                 # DELAYED REWARD: Store pending outcome for later commitment
                 # Don't record outcome yet - wait for Supervisor/Verifier to confirm
