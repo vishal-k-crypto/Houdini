@@ -112,6 +112,21 @@ except ImportError:
     UI_WAIT_AVAILABLE = False
     logger.debug("Event-driven UI wait system not available, using fixed sleeps")
 
+# Import execution confidence model for action rating
+try:
+    from ..utils.execution_confidence import (
+        rate_action,
+        record_action_outcome,
+        should_execute_action,
+        ConfidenceRating,
+        ActionDecision,
+        ConfidenceLevel
+    )
+    CONFIDENCE_MODEL_AVAILABLE = True
+except ImportError:
+    CONFIDENCE_MODEL_AVAILABLE = False
+    logger.debug("Execution confidence model not available")
+
 
 class LangGraphCoordinator:
     """
@@ -470,13 +485,45 @@ Generate micro actions:"""
             executed = []
             success = True
             error_msg = None
+            action_start_time = None
+            pending_outcomes = []  # DELAYED REWARD: Store outcomes until verification
             
             for action in actions:
                 action_type = action.get("type", "")
                 params = action.get("params", {})
                 description = action.get("description", "")
+                rating = None  # Track confidence rating for outcome recording
+                action_start_time = time.time()
                 
                 try:
+                    # ========== CONFIDENCE GATING ==========
+                    # Rate action before execution using the confidence model
+                    if CONFIDENCE_MODEL_AVAILABLE:
+                        context = {
+                            "current_app": screen_context.get("app_name", "unknown"),
+                            "screen_active": True,
+                        }
+                        rating = rate_action(
+                            action_type,
+                            params,
+                            context=context
+                        )
+                        
+                        logger.info(f"📊 Action confidence: {rating.score:.1f}/10 ({rating.level.value})")
+                        self._show("executor", f"Confidence: {rating.score:.1f}/10", "info")
+                        
+                        # Defer to supervisor if confidence too low
+                        if rating.score < 3.0:
+                            logger.warning(f"⚠️ Low confidence ({rating.score:.1f}), deferring to supervisor")
+                            return {
+                                "iteration": iteration,
+                                "current_screen": screen_context,
+                                "screen_history": [screen_context],
+                                "needs_supervisor": True,
+                                "supervisor_reason": f"Action '{description}' has low confidence ({rating.score:.1f}/10)",
+                                "phase": AgentPhase.SUPERVISOR_GUIDE.value,
+                            }
+                    
                     self._show("executor", f"→ {action_type}: {description}", "action")
                     
                     if action_type == "hotkey":
@@ -503,7 +550,12 @@ Generate micro actions:"""
                         else:
                             time.sleep(secs)
                     elif action_type == "click":
-                        click_result = self._vision_click(params.get("element", description))
+                        # Pass pre-calculated execution params from probability model
+                        exec_params = state.get("execution_params")
+                        click_result = self._vision_click(
+                            params.get("element", description),
+                            execution_params=exec_params
+                        )
                         if not click_result.get("success"):
                             raise Exception(click_result.get("error", "Click failed"))
                         self._smart_wait_after("click")
@@ -517,6 +569,18 @@ Generate micro actions:"""
                         error=None,
                     ))
                     
+                    # DELAYED REWARD: Store pending outcome for later commitment
+                    # Don't record outcome yet - wait for Verifier to confirm macro-step success
+                    # This prevents reward poisoning from "successful" clicks on wrong elements
+                    if CONFIDENCE_MODEL_AVAILABLE and rating:
+                        pending_outcomes.append({
+                            "action_type": action_type,
+                            "action_params": params,
+                            "rating": rating,
+                            "execution_time": time.time() - action_start_time,
+                            "context": {"app": screen_context.get("app_name", "unknown")}
+                        })
+                    
                 except Exception as e:
                     logger.error(f"Action failed: {description} - {e}")
                     executed.append(ActionRecord(
@@ -527,6 +591,23 @@ Generate micro actions:"""
                         success=False,
                         error=str(e),
                     ))
+                    
+                    # Immediate failure IS a valid signal - record it now
+                    # (pyautogui threw an exception, so the action truly failed)
+                    if CONFIDENCE_MODEL_AVAILABLE and rating:
+                        try:
+                            record_action_outcome(
+                                action_type=action_type,
+                                action_params=params,
+                                rating=rating,
+                                success=False,
+                                execution_time=time.time() - action_start_time if action_start_time else 0,
+                                context={"app": screen_context.get("app_name", "unknown")},
+                                error_type=type(e).__name__
+                            )
+                        except Exception as outcome_err:
+                            logger.debug(f"Could not record failed action outcome: {outcome_err}")
+                    
                     success = False
                     error_msg = str(e)
                     break
@@ -545,6 +626,7 @@ Generate micro actions:"""
                 "needs_supervisor": not success,
                 "supervisor_reason": error_msg if not success else None,
                 "phase": AgentPhase.SUPERVISOR_GUIDE.value if not success else AgentPhase.EXECUTING.value,
+                "pending_confidence_outcomes": pending_outcomes,  # Pass pending outcomes to state
             }
             
         except Exception as e:
@@ -639,13 +721,40 @@ Supervisor decision:"""
                 
                 actions = response.get("actions", [])
                 executed = []
+                pending_outcomes = []
                 
                 for action in actions:
                     action_type = action.get("type", "")
                     params = action.get("params", {})
                     description = action.get("description", "")
+                    action_start_time = time.time()
+                    rating = None
                     
                     try:
+                        # ========== CONFIDENCE GATING FOR SUPERVISOR ACTIONS ==========
+                        # Rate supervisor actions too, but use a lower threshold since 
+                        # the supervisor is already providing corrective guidance
+                        if CONFIDENCE_MODEL_AVAILABLE:
+                            context = {
+                                "current_app": state.get("current_screen", {}).get("app_name", "unknown"),
+                                "screen_active": True,
+                                "is_supervisor_action": True,  # Flag for special handling
+                            }
+                            rating = rate_action(
+                                action_type,
+                                params,
+                                context=context
+                            )
+                            
+                            logger.info(f"📊 [Supervisor] Action confidence: {rating.score:.1f}/10 ({rating.level.value})")
+                            self._show("supervisor", f"Confidence: {rating.score:.1f}/10", "info")
+                            
+                            # Supervisor actions use lower threshold (2.0) since they're corrective
+                            # But still warn if confidence is very low
+                            if rating.score < 2.0:
+                                logger.warning(f"⚠️ Very low confidence ({rating.score:.1f}) for supervisor action: {description}")
+                                self._show("supervisor", f"Low confidence action - proceeding cautiously", "warning")
+                        
                         if action_type == "hotkey":
                             pyautogui.hotkey(*params.get("keys", []))
                             self._smart_wait_after("hotkey")
@@ -674,8 +783,33 @@ Supervisor decision:"""
                             error=None,
                         ))
                         
+                        # Store pending outcome for delayed reward
+                        if CONFIDENCE_MODEL_AVAILABLE and rating:
+                            pending_outcomes.append({
+                                "action_type": action_type,
+                                "action_params": params,
+                                "rating": rating,
+                                "execution_time": time.time() - action_start_time,
+                                "context": {"app": state.get("current_screen", {}).get("app_name", "unknown"), "is_supervisor": True}
+                            })
+                        
                     except Exception as e:
                         logger.warning(f"Supervisor action failed: {e}")
+                        
+                        # Record immediate failure
+                        if CONFIDENCE_MODEL_AVAILABLE and rating:
+                            try:
+                                record_action_outcome(
+                                    action_type=action_type,
+                                    action_params=params,
+                                    rating=rating,
+                                    success=False,
+                                    execution_time=time.time() - action_start_time,
+                                    context={"app": state.get("current_screen", {}).get("app_name", "unknown"), "is_supervisor": True},
+                                    error_type=type(e).__name__
+                                )
+                            except Exception as outcome_err:
+                                logger.debug(f"Could not record failed supervisor action outcome: {outcome_err}")
                 
                 return {
                     "interventions": [intervention],
@@ -683,6 +817,7 @@ Supervisor decision:"""
                     "needs_supervisor": False,
                     "supervisor_reason": None,
                     "phase": AgentPhase.EXECUTING.value,
+                    "pending_confidence_outcomes": pending_outcomes,  # Include supervisor action outcomes
                 }
                 
         except Exception as e:
@@ -748,21 +883,27 @@ Verification:"""
             
             if complete and confidence >= 0.7:
                 logger.info(f"✅ Task verified complete: {reason}")
+                # COMMIT DELAYED REWARDS: Now we know the task truly succeeded
+                self._commit_pending_outcomes(state, success=True)
                 return {
                     "verification_complete": True,
                     "verification_confidence": confidence,
                     "verification_reason": reason,
                     "phase": AgentPhase.COMPLETED.value,
                     "completed_at": datetime.now().isoformat(),
+                    "pending_confidence_outcomes": [],  # Clear after commitment
                 }
             else:
                 corrective = response.get("corrective_steps", [])
+                # COMMIT DELAYED REWARDS: Actions didn't achieve the goal
+                self._commit_pending_outcomes(state, success=False)
                 return {
                     "verification_complete": False,
                     "verification_confidence": confidence,
                     "verification_reason": reason,
                     "corrective_steps": corrective,
                     "phase": AgentPhase.EVOLVING.value,
+                    "pending_confidence_outcomes": [],  # Clear after commitment
                 }
                 
         except Exception as e:
@@ -971,6 +1112,42 @@ Evolution:"""
         except:
             return None
     
+    def _commit_pending_outcomes(self, state: HoudiniAgentState, success: bool):
+        """
+        Commit all pending confidence outcomes to the ExecutionConfidenceModel.
+        
+        DELAYED REWARD PATTERN:
+        - Actions are executed and their ratings are stored as "pending"
+        - Only when the Verifier confirms the task outcome do we commit these outcomes
+        - This prevents reward poisoning: clicking the wrong element "succeeds"
+          mechanically but fails semantically
+        
+        Args:
+            state: Current agent state containing pending_confidence_outcomes
+            success: Whether the task was verified as successful
+        """
+        if not CONFIDENCE_MODEL_AVAILABLE:
+            return
+        
+        pending = state.get("pending_confidence_outcomes", [])
+        if not pending:
+            return
+        
+        logger.info(f"📊 Committing {len(pending)} delayed outcomes (success={success})")
+        
+        for outcome in pending:
+            try:
+                record_action_outcome(
+                    action_type=outcome["action_type"],
+                    action_params=outcome["action_params"],
+                    rating=outcome["rating"],
+                    success=success,  # Use verified outcome, not mechanical success
+                    execution_time=outcome["execution_time"],
+                    context=outcome.get("context")
+                )
+            except Exception as e:
+                logger.debug(f"Could not commit outcome: {e}")
+    
     def _summarize_elements(self, elements: List[Dict]) -> str:
         """Summarize visible UI elements."""
         if not elements:
@@ -985,11 +1162,19 @@ Evolution:"""
         
         return ", ".join(summary) if summary else "(no named elements)"
     
-    def _vision_click(self, element_description: str) -> Dict:
+    def _vision_click(self, element_description: str, execution_params: Optional[Dict] = None) -> Dict:
         """Handle click actions that need screen analysis."""
         try:
             from ..agents.vision_executor import execute_vision_action
-            return execute_vision_action(self.client, f"click {element_description}")
+            
+            # Pass pre-calculated execution params from probability model
+            # This ensures dynamic thresholds (min_match_probability, verification_strictness)
+            # are actually used by the vision executor
+            return execute_vision_action(
+                self.client, 
+                f"click {element_description}",
+                execution_params=execution_params
+            )
         except Exception as e:
             return {"success": False, "error": str(e)}
     

@@ -97,6 +97,21 @@ except ImportError:
     logger.debug("Context memory not available in coordinator")
     logger.debug("Semantic checker not available, using LLM-only validation")
 
+# Import execution confidence model for action rating
+try:
+    from ..utils.execution_confidence import (
+        rate_action,
+        record_action_outcome,
+        should_execute_action,
+        ConfidenceRating,
+        ActionDecision,
+        ConfidenceLevel
+    )
+    CONFIDENCE_MODEL_AVAILABLE = True
+except ImportError:
+    CONFIDENCE_MODEL_AVAILABLE = False
+    logger.debug("Execution confidence model not available")
+
 
 class AdaptivePhase(str, Enum):
     """Current phase of adaptive execution."""
@@ -151,6 +166,10 @@ class AdaptiveState:
     # Execution state  
     pending_micro_actions: List[MicroAction] = field(default_factory=list)
     executed_actions: List[Dict] = field(default_factory=list)
+    
+    # Delayed Reward: Pending confidence outcomes (committed after verification)
+    # Each entry: {"action_type": str, "params": dict, "rating": ConfidenceRating, "execution_time": float}
+    pending_confidence_outcomes: List[Dict] = field(default_factory=list)
     
     # Screen context
     last_screen_context: Optional[ScreenContext] = None
@@ -654,29 +673,40 @@ CURRENT APP: {screen.app_name}
 WINDOW: {screen.window_title}
 VISIBLE ELEMENTS (sample): {elements_summary}
 
-Generate SPECIFIC actions. Format each action as:
-- hotkey:key1,key2 (e.g., hotkey:command,space)
-- type:text to type
-- key:keyname (e.g., key:return)
+Generate SPECIFIC actions. AVAILABLE ACTION TYPES:
+- activate_app: Directly activate an app (PREFERRED for opening apps)
+  {{"type": "activate_app", "params": {{"app": "Safari"}}, "description": "Open Safari"}}
+- open_url: Directly open URL in browser (PREFERRED for navigation)
+  {{"type": "open_url", "params": {{"url": "youtube.com", "browser": "Safari"}}, "description": "Navigate to YouTube"}}
+- hotkey: Press keyboard shortcut
+  {{"type": "hotkey", "params": {{"keys": ["command", "l"]}}, "description": "Focus URL bar"}}
+- type: Type text (ONLY after verifying correct app is active)
+  {{"type": "type", "params": {{"text": "search query"}}, "description": "Type search"}}
+- key: Press single key
+  {{"type": "key", "params": {{"key": "return"}}, "description": "Submit"}}
+- wait: Wait for UI
+  {{"type": "wait", "params": {{"seconds": 0.5}}, "description": "Wait for page"}}
+- click: Click on UI element
+  {{"type": "click", "params": {{"element": "first video result"}}, "description": "Click video"}}
 - wait:seconds
 - click:element_description (e.g., click:first search result)
 
 Output JSON:
 {{
     "actions": [
-        {{"type": "hotkey", "params": {{"keys": ["command", "space"]}}, "description": "Open Spotlight"}},
-        {{"type": "type", "params": {{"text": "Safari"}}, "description": "Type app name"}},
-        {{"type": "key", "params": {{"key": "return"}}, "description": "Launch app"}}
+        {{"type": "activate_app", "params": {{"app": "Safari"}}, "description": "Open Safari browser"}},
+        {{"type": "open_url", "params": {{"url": "youtube.com", "browser": "Safari"}}, "description": "Navigate to YouTube"}}
     ],
     "requires_screen_check": false,
     "confidence": 0.9
 }}
 
-RULES:
-1. Use keyboard shortcuts when possible (faster than clicking)
-2. On macOS: Cmd+Space for Spotlight, Cmd+L for URL bar, Cmd+T for new tab
-3. For "click:" actions, be specific about what to click
-4. Set requires_screen_check=true if you need to see result before continuing
+CRITICAL RULES:
+1. Use "activate_app" to open/switch apps (NOT Spotlight hotkey - it's unreliable)
+2. Use "open_url" to navigate to websites (NOT type in URL bar - it types in wrong window)
+3. Use "type" ONLY for search boxes/forms AFTER confirming the right app is active
+4. For typing text, verify the target input field exists in VISIBLE ELEMENTS
+5. Set requires_screen_check=true if you need to see result before continuing
 
 Generate micro actions:"""
 
@@ -729,12 +759,50 @@ Generate micro actions:"""
             return []
     
     def _execute_micro_actions(self, actions: List[MicroAction]) -> bool:
-        """Execute a list of micro actions with event-driven waiting."""
+        """Execute a list of micro actions with event-driven waiting and verification."""
         import pyautogui
+        from ..utils.accessibility_reader import get_frontmost_app
+        
+        # Track expected app context for verification
+        expected_app = None
+        last_activated_app = None
         
         for action in actions:
             start_time = time.time()
             try:
+                # ========== CONFIDENCE GATING ==========
+                # Rate action before execution using the confidence model
+                if CONFIDENCE_MODEL_AVAILABLE:
+                    context = {
+                        "current_app": self._get_current_app_name(),
+                        "screen_active": True,
+                    }
+                    rating = rate_action(
+                        action.action_type,
+                        action.params,
+                        context=context
+                    )
+                    
+                    logger.info(f"📊 Action confidence: {rating.score:.1f}/10 ({rating.level.value})")
+                    self._show("executor", f"Confidence: {rating.score:.1f}/10", "info")
+                    
+                    # Defer to supervisor if confidence too low
+                    if rating.score < 3.0:
+                        logger.warning(f"⚠️ Low confidence ({rating.score:.1f}), deferring to supervisor")
+                        self._show("executor", f"Low confidence - needs supervisor", "warning")
+                        # Store the rating for the failed action to learn from
+                        self.state.executed_actions.append({
+                            "type": action.action_type,
+                            "params": action.params,
+                            "description": action.description,
+                            "timestamp": datetime.now().isoformat(),
+                            "confidence_score": rating.score,
+                            "deferred": True
+                        })
+                        return False  # Will trigger supervisor guidance
+                else:
+                    rating = None
+                
                 self._show("executor", f"Executing: {action.description}", "action")
                 
                 # Log action start to replay system
@@ -743,8 +811,16 @@ Generate micro actions:"""
                 
                 if action.action_type == "hotkey":
                     keys = action.params.get("keys", [])
+                    
+                    # Special handling for app-launching hotkeys (like Cmd+Space for Spotlight)
+                    is_spotlight = keys == ["command", "space"] or keys == ["cmd", "space"]
+                    
                     pyautogui.hotkey(*keys)
                     self._smart_wait_after("hotkey")
+                    
+                    # After spotlight, expect to type app name next
+                    if is_spotlight:
+                        time.sleep(0.3)  # Extra wait for Spotlight to appear
                     
                     # Log hotkey to replay
                     if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
@@ -752,7 +828,26 @@ Generate micro actions:"""
                     
                 elif action.action_type == "type":
                     text = action.params.get("text", "")
-                    pyautogui.write(text, interval=0.02)
+                    
+                    # CRITICAL: Verify we're typing in the right place before sending keystrokes
+                    current_app = get_frontmost_app()
+                    current_app_name = current_app.get("app", "").lower()
+                    
+                    # If we just launched an app, verify it's now active
+                    if last_activated_app and last_activated_app.lower() not in current_app_name:
+                        logger.warning(f"⚠️ App mismatch before typing: expected {last_activated_app}, got {current_app_name}")
+                        # Try to activate the expected app
+                        self._activate_app(last_activated_app)
+                        time.sleep(0.5)
+                        # Re-check
+                        current_app = get_frontmost_app()
+                        current_app_name = current_app.get("app", "").lower()
+                        if last_activated_app.lower() not in current_app_name:
+                            logger.error(f"❌ Failed to activate {last_activated_app}, current: {current_app_name}")
+                            return False
+                    
+                    # Use typewrite for ASCII text (more reliable than write)
+                    pyautogui.typewrite(text, interval=0.02) if text.isascii() else pyautogui.write(text, interval=0.02)
                     self._smart_wait_after("type")
                     
                     # Log text typing to replay
@@ -761,8 +856,25 @@ Generate micro actions:"""
                     
                 elif action.action_type == "key":
                     key = action.params.get("key", "")
+                    
+                    # If pressing return after typing app name, track which app we're launching
+                    if key.lower() in ["return", "enter"]:
+                        # Check if previous action was typing an app name
+                        desc_lower = action.description.lower()
+                        if "launch" in desc_lower or "app" in desc_lower or "safari" in desc_lower or "chrome" in desc_lower:
+                            # Extract app name from previous type action or description
+                            for prev in reversed(self.state.executed_actions[-5:]):
+                                if prev.get("type") == "type":
+                                    last_activated_app = prev.get("params", {}).get("text", "")
+                                    break
+                    
                     pyautogui.press(key)
                     self._smart_wait_after("key")
+                    
+                    # After pressing return to launch app, wait for it to activate
+                    if key.lower() in ["return", "enter"] and last_activated_app:
+                        logger.info(f"⏳ Waiting for {last_activated_app} to activate...")
+                        self._wait_for_app_activation(last_activated_app, timeout=3.0)
                     
                     # Log key press to replay
                     if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
@@ -793,13 +905,50 @@ Generate micro actions:"""
                         return False
                     self._smart_wait_after("click")
                 
+                elif action.action_type == "open_url":
+                    # RELIABLE URL opening using AppleScript - avoids typing issues
+                    url = action.params.get("url", "")
+                    browser = action.params.get("browser", "Safari")
+                    
+                    if url:
+                        success = self._open_url_in_browser(url, browser)
+                        if not success:
+                            logger.warning(f"Failed to open URL: {url}")
+                            return False
+                        self._smart_wait_after("click")  # Same wait as click for page load
+                
+                elif action.action_type == "activate_app":
+                    # Direct app activation using AppleScript
+                    app_name = action.params.get("app", "")
+                    if app_name:
+                        success = self._activate_app(app_name)
+                        if success:
+                            self._wait_for_app_activation(app_name, timeout=2.0)
+                        else:
+                            logger.warning(f"Failed to activate app: {app_name}")
+                            return False
+                
                 # Record action
                 self.state.executed_actions.append({
                     "type": action.action_type,
                     "params": action.params,
                     "description": action.description,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "confidence_score": rating.score if rating else None,
+                    "success": True
                 })
+                
+                # DELAYED REWARD: Store pending outcome for later commitment
+                # Don't record outcome yet - wait for Supervisor/Verifier to confirm
+                # This prevents reward poisoning from "successful" clicks on wrong elements
+                if CONFIDENCE_MODEL_AVAILABLE and rating:
+                    self.state.pending_confidence_outcomes.append({
+                        "action_type": action.action_type,
+                        "action_params": action.params,
+                        "rating": rating,
+                        "execution_time": time.time() - start_time,
+                        "context": {"app": self._get_current_app_name()}
+                    })
                 
                 # Log action completion to replay
                 if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
@@ -808,6 +957,23 @@ Generate micro actions:"""
                 
             except Exception as e:
                 logger.error(f"Micro action failed: {action.description} - {e}")
+                
+                # Immediate failure IS a valid signal - record it now
+                # (pyautogui threw an exception, so the action truly failed)
+                if CONFIDENCE_MODEL_AVAILABLE and rating:
+                    try:
+                        record_action_outcome(
+                            action_type=action.action_type,
+                            action_params=action.params,
+                            rating=rating,
+                            success=False,
+                            execution_time=time.time() - start_time,
+                            context={"app": self._get_current_app_name()},
+                            error_type=type(e).__name__
+                        )
+                    except Exception as outcome_err:
+                        logger.debug(f"Could not record failed action outcome: {outcome_err}")
+                
                 # Log failure to replay
                 if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
                     duration_ms = (time.time() - start_time) * 1000
@@ -837,6 +1003,178 @@ Generate micro actions:"""
             else:
                 time.sleep(0.1)
     
+    def _activate_app(self, app_name: str) -> bool:
+        """
+        Activate an application using AppleScript.
+        More reliable than relying on Spotlight.
+        """
+        import subprocess
+        
+        logger.info(f"🚀 Activating app: {app_name}")
+        
+        # Clean up app name - handle common variations
+        clean_name = app_name.strip()
+        
+        # Common app name mappings
+        app_mappings = {
+            "safari": "Safari",
+            "chrome": "Google Chrome",
+            "firefox": "Firefox",
+            "terminal": "Terminal",
+            "finder": "Finder",
+            "youtube": "Safari",  # YouTube is a website, use Safari
+        }
+        
+        actual_app = app_mappings.get(clean_name.lower(), clean_name)
+        
+        try:
+            script = f'tell application "{actual_app}" to activate'
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                logger.info(f"✅ Activated {actual_app}")
+                return True
+            else:
+                logger.warning(f"⚠️ Failed to activate {actual_app}: {result.stderr}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ App activation error: {e}")
+            return False
+    
+    def _wait_for_app_activation(self, app_name: str, timeout: float = 3.0) -> bool:
+        """
+        Wait for an app to become the frontmost application.
+        Returns True if app is activated within timeout.
+        """
+        from ..utils.accessibility_reader import get_frontmost_app
+        
+        clean_name = app_name.lower().strip()
+        start = time.time()
+        
+        while time.time() - start < timeout:
+            current = get_frontmost_app()
+            current_app = current.get("app", "").lower()
+            
+            # Check if the expected app is now active
+            if clean_name in current_app or current_app in clean_name:
+                logger.info(f"✅ {app_name} is now active")
+                return True
+            
+            # Special case: if we launched Safari, also check for the app being responsive
+            if "safari" in clean_name and "safari" in current_app:
+                logger.info(f"✅ Safari is now active")
+                return True
+            
+            time.sleep(0.2)
+        
+        logger.warning(f"⏱️ Timeout waiting for {app_name} to activate")
+        return False
+    
+    def _verify_ready_for_input(self, expected_context: str = "") -> bool:
+        """
+        Verify the current screen state is ready for input.
+        Checks for focused text fields, active windows, etc.
+        """
+        from ..utils.accessibility_reader import get_frontmost_app
+        
+        current = get_frontmost_app()
+        app_name = current.get("app", "")
+        window = current.get("window", "")
+        
+        # Basic check: we have an app and window
+        if not app_name:
+            logger.warning("No active application detected")
+            return False
+        
+        # If we have an expected context, check it
+        if expected_context:
+            context_lower = expected_context.lower()
+            if app_name.lower() not in context_lower and context_lower not in app_name.lower():
+                logger.warning(f"App mismatch: expected context '{expected_context}', got '{app_name}'")
+                return False
+        
+        return True
+    
+    def _open_url_in_browser(self, url: str, browser: str = "Safari") -> bool:
+        """
+        Open a URL in a browser using AppleScript.
+        This is MORE RELIABLE than typing the URL manually.
+        
+        Args:
+            url: The URL to open
+            browser: Browser name (Safari, Google Chrome, Firefox)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        import subprocess
+        
+        logger.info(f"🌐 Opening URL: {url} in {browser}")
+        
+        # Ensure URL has protocol
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        
+        # Browser-specific AppleScript
+        browser_lower = browser.lower()
+        
+        try:
+            if "safari" in browser_lower:
+                script = f'''
+                tell application "Safari"
+                    activate
+                    if (count of windows) = 0 then
+                        make new document
+                    end if
+                    set URL of current tab of front window to "{url}"
+                end tell
+                '''
+            elif "chrome" in browser_lower:
+                script = f'''
+                tell application "Google Chrome"
+                    activate
+                    if (count of windows) = 0 then
+                        make new window
+                    end if
+                    set URL of active tab of front window to "{url}"
+                end tell
+                '''
+            elif "firefox" in browser_lower:
+                script = f'''
+                tell application "Firefox"
+                    activate
+                    open location "{url}"
+                end tell
+                '''
+            else:
+                # Default: use system open command
+                subprocess.run(["open", url], check=True)
+                logger.info(f"✅ Opened URL with system default browser")
+                return True
+            
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, text=True, timeout=10
+            )
+            
+            if result.returncode == 0:
+                logger.info(f"✅ Opened URL in {browser}")
+                # Wait for page to start loading
+                time.sleep(0.5)
+                return True
+            else:
+                logger.warning(f"⚠️ Failed to open URL: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error(f"❌ Timeout opening URL in {browser}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error opening URL: {e}")
+            return False
+    
     def _vision_click(self, element_description: str) -> Dict:
         """Handle click actions that need screen analysis."""
         try:
@@ -845,7 +1183,17 @@ Generate micro actions:"""
             
             # Create a minimal CLI for vision
             cli = GeminiCLI()
-            return execute_vision_action(cli, f"click {element_description}")
+            
+            # Pass pre-calculated execution params from probability model
+            # This ensures dynamic thresholds (min_match_probability, verification_strictness)
+            # are actually used by the vision executor
+            exec_params = self.state.execution_params if self.state.execution_params else None
+            
+            return execute_vision_action(
+                cli, 
+                f"click {element_description}",
+                execution_params=exec_params
+            )
         except Exception as e:
             logger.error(f"Vision click failed: {e}")
             return {"success": False, "error": str(e)}
@@ -981,10 +1329,33 @@ Supervisor decision:"""
             if not expected_app:
                 return None  # Can't determine expected app, fall back to LLM
             
-            # Generate actions to open/switch to the expected app
+            # Use DIRECT AppleScript activation instead of Spotlight
+            # This is more reliable and faster
             normalized = normalize_app_name(expected_app)
             
-            # Common correction: Use Spotlight to open the app
+            self._show("supervisor", 
+                      f"⚡ Fast correction: activating {expected_app} directly", 
+                      "fast_fix")
+            
+            # Activate the app directly via AppleScript
+            if self._activate_app(expected_app):
+                # Wait for app to be ready
+                if self._wait_for_app_activation(expected_app, timeout=2.0):
+                    logger.info(f"✅ Fast correction succeeded: {expected_app} is now active")
+                    
+                    # Return success with no new actions needed - app is already activated
+                    return {
+                        "new_actions": [],  # No actions needed, app is already active
+                        "fast_path": True,
+                        "correction_type": "direct_activation",
+                        "target_app": expected_app,
+                        "skip": False  # Don't skip the step, retry it now that correct app is active
+                    }
+                else:
+                    logger.warning(f"⚠️ App activated but not ready: {expected_app}")
+            
+            # If direct activation failed, fall back to Spotlight method
+            logger.info(f"📍 Falling back to Spotlight for {expected_app}")
             correction_actions = [
                 MicroAction(
                     action_type="hotkey",
@@ -993,7 +1364,7 @@ Supervisor decision:"""
                 ),
                 MicroAction(
                     action_type="wait",
-                    params={"seconds": 0.3},
+                    params={"seconds": 0.5},
                     description="Wait for Spotlight"
                 ),
                 MicroAction(
@@ -1003,7 +1374,7 @@ Supervisor decision:"""
                 ),
                 MicroAction(
                     action_type="wait",
-                    params={"seconds": 0.2},
+                    params={"seconds": 0.3},
                     description="Wait for search results"
                 ),
                 MicroAction(
@@ -1013,25 +1384,60 @@ Supervisor decision:"""
                 ),
                 MicroAction(
                     action_type="wait",
-                    params={"seconds": 0.5},
-                    description=f"Wait for {expected_app} to open"
+                    params={"seconds": 1.0},
+                    description=f"Wait for {expected_app} to fully open"
                 ),
             ]
-            
-            self._show("supervisor", 
-                      f"⚡ Fast correction: opening {expected_app} via Spotlight", 
-                      "fast_fix")
             
             return {
                 "new_actions": correction_actions,
                 "fast_path": True,
-                "correction_type": "app_switch",
+                "correction_type": "spotlight_fallback",
                 "target_app": expected_app
             }
             
         except Exception as e:
             logger.debug(f"Fast correction failed: {e}")
             return None  # Fall back to LLM
+    
+    def _commit_pending_outcomes(self, success: bool):
+        """
+        Commit all pending confidence outcomes to the ExecutionConfidenceModel.
+        
+        DELAYED REWARD PATTERN:
+        - Actions are executed and their ratings are stored as "pending"
+        - Only when the Supervisor/Verifier confirms the macro-step outcome
+          do we commit these outcomes to the model
+        - This prevents reward poisoning: clicking the wrong element "succeeds"
+          mechanically but fails semantically
+        
+        Args:
+            success: Whether the macro-step was verified as successful
+        """
+        if not CONFIDENCE_MODEL_AVAILABLE:
+            return
+        
+        pending = self.state.pending_confidence_outcomes
+        if not pending:
+            return
+        
+        logger.info(f"📊 Committing {len(pending)} delayed outcomes (success={success})")
+        
+        for outcome in pending:
+            try:
+                record_action_outcome(
+                    action_type=outcome["action_type"],
+                    action_params=outcome["action_params"],
+                    rating=outcome["rating"],
+                    success=success,  # Use verified outcome, not mechanical success
+                    execution_time=outcome["execution_time"],
+                    context=outcome.get("context")
+                )
+            except Exception as e:
+                logger.debug(f"Could not commit outcome: {e}")
+        
+        # Clear pending outcomes after commitment
+        self.state.pending_confidence_outcomes.clear()
     
     def _supervisor_verify_completion(self) -> Dict:
         """
@@ -1105,9 +1511,13 @@ Verification result:"""
             
             if complete and confidence >= 0.7:
                 logger.info(f"✅ Task verified complete: {reason}")
+                # COMMIT DELAYED REWARDS: Now we know the macro step truly succeeded
+                self._commit_pending_outcomes(success=True)
                 return {"complete": True, "confidence": confidence}
             else:
                 logger.warning(f"⚠️ Task not complete: {what_is_missing or 'Unknown'}")
+                # COMMIT DELAYED REWARDS: Actions didn't achieve the goal
+                self._commit_pending_outcomes(success=False)
                 return {
                     "complete": False,
                     "reason": reason,
