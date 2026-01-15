@@ -53,7 +53,8 @@ except ImportError:
 
 
 def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts: int = 3,
-                          context: Optional[Dict] = None) -> Dict:
+                          context: Optional[Dict] = None,
+                          execution_params: Optional[Dict] = None) -> Dict:
     """
     Execute a vision-based action using accessibility tree analysis.
     The executor analyzes the UI tree and determines where to click autonomously.
@@ -73,15 +74,32 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
         action_description: e.g., "click first search result"
         max_attempts: retry count
         context: Optional context for probability model
+        execution_params: Pre-calculated execution parameters from TaskProbabilityModel.
+                         If provided, these are used directly instead of recalculating.
     
     Returns: {"success": True/False, "error": "...", "method": "...", "match_probability": float, "flexibility": dict}
     """
     logger.info(f"👁️ Vision executor analyzing: {action_description}")
     
-    # Get flexible execution params based on probability analysis
+    # Use pre-calculated execution params if provided, otherwise calculate them
     exec_params = {}
     flexibility_info = {}
-    if PROBABILITY_MODEL_AVAILABLE:
+    
+    if execution_params:
+        # Use pre-calculated params from coordinator (avoids redundant calculation)
+        exec_params = execution_params
+        flexibility_info = {
+            'strategy': exec_params.get('execution_strategy', 'standard'),
+            'confidence': exec_params.get('confidence', 0.5),
+            'intent': exec_params.get('primary_intent', 'unknown'),
+            'predicted_info': exec_params.get('predicted_info', {}),
+        }
+        logger.info(f"  📊 Using pre-calculated execution params:")
+        logger.info(f"     Strategy: {exec_params.get('execution_strategy', 'standard')}")
+        logger.info(f"     Confidence: {exec_params.get('confidence', 0.5):.0%}")
+        logger.info(f"     Min match: {exec_params.get('min_match_probability', 0.5):.0%}")
+        logger.info(f"     Verification: {exec_params.get('verification_strictness', 'moderate')}")
+    elif PROBABILITY_MODEL_AVAILABLE:
         exec_params = get_flexible_execution_params(action_description, context)
         flexibility_info = {
             'strategy': exec_params.get('execution_strategy', 'standard'),

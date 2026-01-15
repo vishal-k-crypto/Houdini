@@ -260,9 +260,21 @@ def extract_expected_context(step_description: str, step_context: str = "") -> D
     }
     
     # Extract domain hints (e.g., "google.com", "youtube.com")
-    domain_match = re.search(r'(?:go\s+to|visit|navigate\s+to|open)\s+(\w+\.(?:com|org|net|io|dev))', combined)
+    # First try with action verbs
+    domain_match = re.search(r'(?:go\s+to|visit|navigate\s+to|open)\s+(\w+\.(?:com|org|net|io|dev|ai|co))', combined)
     if domain_match:
         result["domain"] = domain_match.group(1)
+    
+    # FALLBACK: Handle raw URLs without action verbs (e.g., "https://www.youtube.com")
+    # This fixes tasks like just pasting a URL
+    if not result["domain"]:
+        # Match URLs with optional protocol and www prefix
+        raw_url_match = re.search(r'(?:https?://)?(?:www\.)?([\w\-]+\.(?:com|org|net|io|dev|ai|co))', combined)
+        if raw_url_match:
+            result["domain"] = raw_url_match.group(1)
+            # Raw URLs imply browser navigation - set app to browser if not already set
+            if not result["app"]:
+                result["app"] = "safari"  # Default browser assumption for URLs
     
     # Extract context keywords
     for domain, keywords in CONTEXT_KEYWORDS.items():

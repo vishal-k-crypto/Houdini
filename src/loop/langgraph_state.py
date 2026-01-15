@@ -147,6 +147,11 @@ class HoudiniAgentState(TypedDict):
     uncertainty_score: float
     execution_params: Optional[Dict[str, Any]]
     
+    # ========== DELAYED REWARD: Pending confidence outcomes ==========
+    # Stores action ratings until Verifier confirms macro-step success/failure
+    # Each entry: {"action_type": str, "action_params": dict, "rating": ConfidenceRating, "execution_time": float}
+    pending_confidence_outcomes: List[Dict[str, Any]]
+    
     # ========== TIMESTAMPS ==========
     started_at: Optional[str]
     completed_at: Optional[str]
@@ -227,6 +232,9 @@ def create_initial_state(
         task_flexibility=None,
         uncertainty_score=0.0,
         execution_params=None,
+        
+        # Delayed reward: pending confidence outcomes
+        pending_confidence_outcomes=[],
         
         # Timestamps
         started_at=datetime.now().isoformat(),
