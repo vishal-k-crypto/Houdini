@@ -45,30 +45,108 @@ except ImportError:
 
 # Screen dimensions cache
 _screen_height = None
+_screen_info_cached = None
 
 
 def get_screen_height() -> int:
-    """Get screen height for coordinate conversion."""
-    global _screen_height
-    if _screen_height is None:
-        try:
-            import pyautogui
-            _, _screen_height = pyautogui.size()
-        except:
-            _screen_height = 1080  # Default fallback
+    """
+    Get screen height for coordinate conversion.
+    
+    IMPORTANT: Handles Retina displays properly by checking multiple sources:
+    1. CGDisplayBounds (native resolution)
+    2. NSScreen (logical resolution - what PyAutoGUI uses)
+    3. PyAutoGUI fallback
+    
+    Uses the logical resolution to match PyAutoGUI's coordinate system.
+    """
+    global _screen_height, _screen_info_cached
+    if _screen_height is not None:
+        return _screen_height
+    
+    try:
+        # Try NSScreen first - gives logical resolution matching PyAutoGUI
+        import AppKit
+        screen = AppKit.NSScreen.mainScreen()
+        if screen:
+            frame = screen.frame()
+            _screen_height = int(frame.size.height)
+            logger.debug(f"Screen height from NSScreen: {_screen_height} (logical)")
+            return _screen_height
+    except Exception as e:
+        logger.debug(f"NSScreen failed: {e}")
+    
+    try:
+        # Fallback to PyAutoGUI
+        import pyautogui
+        _, _screen_height = pyautogui.size()
+        logger.debug(f"Screen height from PyAutoGUI: {_screen_height}")
+    except:
+        _screen_height = 1080  # Default fallback
+        logger.warning("Using default screen height 1080")
+    
     return _screen_height
+
+
+def get_screen_info() -> dict:
+    """Get comprehensive screen info for debugging coordinate issues."""
+    global _screen_info_cached
+    if _screen_info_cached:
+        return _screen_info_cached
+    
+    info = {
+        "pyautogui_size": None,
+        "nsscreen_size": None,
+        "cgdisplay_size": None,
+        "backing_scale": 1.0,
+        "is_retina": False,
+    }
+    
+    try:
+        import pyautogui
+        info["pyautogui_size"] = pyautogui.size()
+    except:
+        pass
+    
+    try:
+        import AppKit
+        screen = AppKit.NSScreen.mainScreen()
+        if screen:
+            frame = screen.frame()
+            info["nsscreen_size"] = (int(frame.size.width), int(frame.size.height))
+            # Get backing scale factor for Retina detection
+            info["backing_scale"] = screen.backingScaleFactor()
+            info["is_retina"] = info["backing_scale"] > 1.0
+    except:
+        pass
+    
+    try:
+        from Quartz import CGMainDisplayID, CGDisplayBounds
+        bounds = CGDisplayBounds(CGMainDisplayID())
+        info["cgdisplay_size"] = (int(bounds.size.width), int(bounds.size.height))
+    except:
+        pass
+    
+    _screen_info_cached = info
+    return info
 
 
 def convert_macos_to_pyautogui_coords(x: int, y: int) -> Tuple[int, int]:
     """
-    Convert macOS coordinates (bottom-left origin) to PyAutoGUI (top-left origin).
+    Convert macOS coordinates to PyAutoGUI coordinates.
     
-    macOS: (0, 0) = bottom-left, y increases upward
-    PyAutoGUI: (0, 0) = top-left, y increases downward
+    macOS Accessibility API: Origin at TOP-LEFT of screen (not bottom-left!)
+    PyAutoGUI: Origin at TOP-LEFT of screen
+    
+    IMPORTANT: Despite common misconception, AXPosition coordinates from
+    Accessibility API are ALREADY in screen coordinates with (0,0) at top-left.
+    No Y-axis flip is needed for position values from AXUIElement.
+    
+    The only conversion needed is for Retina displays if the APIs report
+    different resolutions.
     """
-    screen_height = get_screen_height()
-    converted_y = screen_height - y
-    return (x, converted_y)
+    # AXPosition is already in screen coords (top-left origin)
+    # Just return as-is since both systems use same origin
+    return (int(x), int(y))
 
 
 @dataclass

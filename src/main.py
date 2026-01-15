@@ -179,6 +179,46 @@ def run_replay_mode(args):
         run_replay(session_id)
 
 
+def run_debug_report_mode(args):
+    """Generate AI-readable debug reports from execution sessions."""
+    from .utils.debug_report_generator import get_debug_report_generator
+    from .replay.execution_logger import get_execution_logger
+    
+    generator = get_debug_report_generator()
+    exec_logger = get_execution_logger()
+    
+    # Generate report for specific session
+    if getattr(args, 'debug_report_session', None):
+        session_id = args.debug_report_session
+        session = exec_logger.load_session_by_task_id(session_id)
+        
+        if session:
+            output_path = generator.export_to_file(session)
+            logger.info(f"📝 Debug report generated: {output_path}")
+        else:
+            logger.error(f"❌ Session not found: {session_id}")
+        return
+    
+    # Generate reports for all failed sessions
+    if getattr(args, 'debug_report_all', False):
+        reports = generator.export_failed_sessions(limit=10)
+        if reports:
+            logger.info(f"📝 Generated {len(reports)} debug reports:")
+            for path in reports:
+                logger.info(f"   - {path}")
+        else:
+            logger.info("ℹ️ No failed sessions found")
+        return
+    
+    # Default: generate report for latest session
+    output_path = generator.export_latest_session()
+    if output_path:
+        logger.info(f"📝 Debug report generated: {output_path}")
+        logger.info(f"   Share this file with an AI for root cause analysis!")
+    else:
+        logger.error("❌ No sessions found. Run some tasks first!")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Houdini Agent - Fast Batch Execution with Ollama Qwen 3 Coder")
     parser.add_argument("--task", "-t", required=False, help="Task description")
@@ -226,7 +266,20 @@ def main():
     parser.add_argument("--replay-list", dest="list_sessions", action="store_true", default=False,
                         help="List all available replay sessions")
     
+    # Debug Report mode (NEW!)
+    parser.add_argument("--debug-report", dest="debug_report", action="store_true", default=False,
+                        help="Generate AI-readable debug report for the latest session")
+    parser.add_argument("--debug-report-session", dest="debug_report_session", type=str, default=None,
+                        help="Generate debug report for a specific session by task ID")
+    parser.add_argument("--debug-report-all", dest="debug_report_all", action="store_true", default=False,
+                        help="Generate debug reports for all failed sessions")
+    
     args = parser.parse_args()
+    
+    # Handle debug report mode
+    if getattr(args, 'debug_report', False) or getattr(args, 'debug_report_session', None) or getattr(args, 'debug_report_all', False):
+        run_debug_report_mode(args)
+        return
     
     # Handle replay mode
     if getattr(args, 'replay_mode', False) or getattr(args, 'list_sessions', False) or getattr(args, 'session_id', None):

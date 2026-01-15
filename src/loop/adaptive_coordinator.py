@@ -506,9 +506,9 @@ Use this analysis to:
 3. Add verification steps if uncertainty is high
 """
         
-        prompt = f"""You are a MACRO PLANNER. Your job is to understand the task at a HIGH LEVEL only.
-DO NOT give specific keyboard shortcuts or detailed actions.
-Give broad steps that a human would understand.
+        prompt = f"""You are a MACRO PLANNER. Generate high-level steps WITH specific action hints to guide execution.
+
+IMPORTANT: Include "suggested_actions" array for each step to prevent repeated LLM calls.
 {flexibility_context}
 TASK: {task}
 
@@ -516,20 +516,29 @@ Output JSON:
 {{
     "macro_steps": [
         {{
-            "step": "High-level description of what to do",
-            "context": "What should be visible/achieved after this step",
-            "potential_issues": "What could go wrong"
+            "step": "High-level description",
+            "context": "What should be visible after",
+            "potential_issues": "What could go wrong",
+            "suggested_actions": ["hotkey:command,space", "type:Safari", "key:return", "wait:1.5"]
         }}
     ],
     "expected_outcome": "What success looks like",
-    "success_criteria": "How to verify the task is complete"
+    "success_criteria": "How to verify completion"
 }}
 
-EXAMPLES:
-- "Search for AI news" → [{{step: "Open a web browser", context: "Browser window visible"}}, {{step: "Navigate to a search engine", context: "Search page loaded"}}, {{step: "Search for AI news", context: "Search results displayed"}}]
-- "Send WhatsApp message to John" → [{{step: "Open WhatsApp", context: "WhatsApp window visible"}}, {{step: "Find contact John", context: "John's chat visible"}}, {{step: "Type and send message", context: "Message sent"}}]
+ACTION PATTERNS TO USE:
+- Open app via Spotlight: ["hotkey:command,space", "type:AppName", "key:return", "wait:1.5"]
+- Focus URL bar in browser: ["hotkey:command,l"]
+- Type and search: ["type:query text", "key:return"]
+- New tab: ["hotkey:command,t"]
+- Navigate to URL: ["hotkey:command,l", "type:url", "key:return", "wait:2"]
 
-Keep steps BROAD and CONCEPTUAL. The executor will figure out the details.
+EXAMPLES:
+- "Open Safari" -> {{step: "Launch Safari browser", suggested_actions: ["hotkey:command,space", "type:Safari", "key:return", "wait:1.5"]}}
+- "Search for AI news" -> {{step: "Search in browser", suggested_actions: ["hotkey:command,l", "type:AI news", "key:return", "wait:2"]}}
+- "Open YouTube" -> {{step: "Navigate to YouTube", suggested_actions: ["hotkey:command,l", "type:youtube.com", "key:return", "wait:2"]}}
+
+Provide CONCRETE actions to avoid repeated LLM generation.
 
 Generate the macro plan:"""
         
@@ -620,16 +629,30 @@ Generate the macro plan:"""
                 "reason": f"Cannot determine micro actions for: {step_desc}. Current app: {screen_context.app_name}"
             }
         
-        # Check if screen matches expectations (additional validation)
-        if not self._screen_matches_expectation(screen_context, expected_context):
-            return {
-                "complete": False,
-                "needs_supervisor": True,
-                "reason": f"Screen state unexpected. Expected: {expected_context}. Got: {screen_context.app_name} - {screen_context.window_title}"
-            }
+        # NOTE: We DON'T check expectations BEFORE execution for steps that
+        # are meant to CHANGE the screen state (e.g., "open Safari" will
+        # change from Terminal to Safari). The expectation check happens
+        # AFTER action execution instead.
         
         # Execute the micro actions
         success = self._execute_micro_actions(micro_actions)
+        
+        # Check expectations AFTER execution if we have expected context
+        if success and expected_context:
+            # Wait a bit for UI to settle
+            time.sleep(0.3)
+            
+            # Capture fresh screen context after actions
+            post_screen = self._capture_screen_context()
+            
+            if not self._screen_matches_expectation(post_screen, expected_context):
+                logger.warning(f"Post-execution screen doesn't match expectation: {expected_context}")
+                # Don't fail immediately - the task might still be progressing
+                # Just note it for the supervisor
+                self.state.supervisor_notes.append(
+                    f"Step '{step_desc}' executed but screen shows {post_screen.app_name} "
+                    f"instead of expected '{expected_context}'"
+                )
         
         return {"complete": success, "needs_supervisor": not success}
     
@@ -661,12 +684,66 @@ Generate the macro plan:"""
     def _generate_micro_actions(self, macro_step: Dict, screen: ScreenContext) -> List[MicroAction]:
         """
         Generate specific micro actions based on macro step and current screen.
-        This is where executor intelligence lives.
+        IMPROVEMENT: Use suggested_actions from planner if available, reducing LLM calls.
         """
         step_desc = macro_step.get("step", "")
         app_name = screen.app_name.lower()
         
-        self._show("executor", f"🧠 Thinking about: {step_desc[:50]}...", "thinking")
+        # NEW: Check if planner provided suggested actions (avoid LLM call)
+        suggested_actions = macro_step.get("suggested_actions", [])
+        if suggested_actions and len(suggested_actions) > 0:
+            logger.info(f"✅ Using {len(suggested_actions)} suggested actions from planner (no LLM call needed)")
+            self._show("executor", f"✅ Using pre-planned actions ({len(suggested_actions)} actions)", "info")
+            
+            # Convert string actions to MicroAction objects
+            micro_actions = []
+            for action_str in suggested_actions:
+                if isinstance(action_str, str):
+                    # Parse "hotkey:command,space" format
+                    if ":" in action_str:
+                        parts = action_str.split(":", 1)
+                        action_type = parts[0]
+                        params_str = parts[1] if len(parts) > 1 else ""
+                        
+                        if action_type == "hotkey":
+                            keys = [k.strip() for k in params_str.split(",")]
+                            micro_actions.append(MicroAction(
+                                action_type="hotkey",
+                                params={"keys": keys},
+                                description=f"Press {'+'.join(keys)}"
+                            ))
+                        elif action_type == "type":
+                            micro_actions.append(MicroAction(
+                                action_type="type",
+                                params={"text": params_str},
+                                description=f"Type: {params_str}"
+                            ))
+                        elif action_type == "key":
+                            micro_actions.append(MicroAction(
+                                action_type="key",
+                                params={"key": params_str},
+                                description=f"Press {params_str}"
+                            ))
+                        elif action_type == "wait":
+                            micro_actions.append(MicroAction(
+                                action_type="wait",
+                                params={"seconds": float(params_str)},
+                                description=f"Wait {params_str}s"
+                            ))
+                elif isinstance(action_str, dict):
+                    # Already in proper format
+                    micro_actions.append(MicroAction(
+                        action_type=action_str.get("type"),
+                        params=action_str.get("params", {}),
+                        description=action_str.get("description", "")
+                    ))
+            
+            if micro_actions:
+                return micro_actions
+        
+        # Fallback: Generate with LLM (only if no suggestions provided)
+        self._show("executor", f"🧠 Generating actions with LLM: {step_desc[:50]}...", "thinking")
+        logger.warning("⚠️ No suggested_actions from planner, calling LLM (slower)")
         
         # Build context for micro action generation
         elements_summary = self._summarize_elements(screen.visible_elements[:20])
@@ -681,40 +758,39 @@ CURRENT APP: {screen.app_name}
 WINDOW: {screen.window_title}
 VISIBLE ELEMENTS (sample): {elements_summary}
 
-Generate SPECIFIC actions. AVAILABLE ACTION TYPES:
-- activate_app: Directly activate an app (PREFERRED for opening apps)
-  {{"type": "activate_app", "params": {{"app": "Safari"}}, "description": "Open Safari"}}
-- open_url: Directly open URL in browser (PREFERRED for navigation)
-  {{"type": "open_url", "params": {{"url": "youtube.com", "browser": "Safari"}}, "description": "Navigate to YouTube"}}
-- hotkey: Press keyboard shortcut
-  {{"type": "hotkey", "params": {{"keys": ["command", "l"]}}, "description": "Focus URL bar"}}
-- type: Type text (ONLY after verifying correct app is active)
-  {{"type": "type", "params": {{"text": "search query"}}, "description": "Type search"}}
+Generate SPECIFIC actions using KEYBOARD SHORTCUTS (most reliable):
+
+PREFERRED ACTION TYPES:
+- hotkey: Press keyboard shortcut (MOST RELIABLE - use this for opening apps)
+  {{"type": "hotkey", "params": {{"keys": ["command", "space"]}}, "description": "Open Spotlight"}}
+- type: Type text
+  {{"type": "type", "params": {{"text": "Safari"}}, "description": "Type app name"}}
 - key: Press single key
-  {{"type": "key", "params": {{"key": "return"}}, "description": "Submit"}}
+  {{"type": "key", "params": {{"key": "return"}}, "description": "Press Enter"}}
 - wait: Wait for UI
-  {{"type": "wait", "params": {{"seconds": 0.5}}, "description": "Wait for page"}}
-- click: Click on UI element
-  {{"type": "click", "params": {{"element": "first video result"}}, "description": "Click video"}}
-- wait:seconds
-- click:element_description (e.g., click:first search result)
+  {{"type": "wait", "params": {{"seconds": 1.5}}, "description": "Wait for app to load"}}
+
+AVOID THESE (unreliable):
+- activate_app (doesn't work - use Spotlight instead)
+- open_url (doesn't work - use Cmd+L and type URL instead)
 
 Output JSON:
 {{
     "actions": [
-        {{"type": "activate_app", "params": {{"app": "Safari"}}, "description": "Open Safari browser"}},
-        {{"type": "open_url", "params": {{"url": "youtube.com", "browser": "Safari"}}, "description": "Navigate to YouTube"}}
+        {{"type": "hotkey", "params": {{"keys": ["command", "space"]}}, "description": "Open Spotlight"}},
+        {{"type": "type", "params": {{"text": "Safari"}}, "description": "Type Safari"}},
+        {{"type": "key", "params": {{"key": "return"}}, "description": "Launch app"}},
+        {{"type": "wait", "params": {{"seconds": 1.5}}, "description": "Wait for Safari"}}
     ],
     "requires_screen_check": false,
     "confidence": 0.9
 }}
 
 CRITICAL RULES:
-1. Use "activate_app" to open/switch apps (NOT Spotlight hotkey - it's unreliable)
-2. Use "open_url" to navigate to websites (NOT type in URL bar - it types in wrong window)
-3. Use "type" ONLY for search boxes/forms AFTER confirming the right app is active
-4. For typing text, verify the target input field exists in VISIBLE ELEMENTS
-5. Set requires_screen_check=true if you need to see result before continuing
+1. ALWAYS use Spotlight (Cmd+Space) to open apps - MOST RELIABLE method
+2. NEVER use activate_app or open_url - they don't work properly
+3. Use keyboard shortcuts for all navigation (Cmd+L for URL bar)
+4. Set requires_screen_check=true only if you must verify screen state
 
 Generate micro actions:"""
 
@@ -1088,8 +1164,33 @@ Generate micro actions:"""
     def _wait_for_app_activation(self, app_name: str, timeout: float = 3.0) -> bool:
         """
         Wait for an app to become the frontmost application.
+        
+        CRITICAL FIX: Uses event-driven waiting from ui_wait.py instead of
+        polling with fixed sleeps. This ensures the agent properly waits
+        for the app to become active before trying to interact with it.
+        
         Returns True if app is activated within timeout.
         """
+        # Try event-driven wait first (more reliable)
+        if self._ui_wait:
+            try:
+                result = self._ui_wait.wait_for_app_focus(
+                    app_name=app_name,
+                    timeout_ms=int(timeout * 1000),
+                    check_window=True
+                )
+                if result.success:
+                    logger.info(f"✅ {app_name} is now active (waited {result.waited_ms:.0f}ms)")
+                    # Extra stabilization wait after app activates
+                    time.sleep(0.2)
+                    return True
+                else:
+                    logger.warning(f"⏱️ {result.reason}")
+                    return False
+            except Exception as e:
+                logger.debug(f"Event-driven wait failed: {e}, falling back to polling")
+        
+        # Fallback to polling-based wait
         from ..utils.accessibility_reader import get_frontmost_app
         
         clean_name = app_name.lower().strip()
@@ -1109,9 +1210,9 @@ Generate micro actions:"""
                 logger.info(f"✅ Safari is now active")
                 return True
             
-            time.sleep(0.2)
+            time.sleep(0.1)  # Faster polling
         
-        logger.warning(f"⏱️ Timeout waiting for {app_name} to activate")
+        logger.warning(f"⏱️ Timeout waiting for {app_name} to activate (last: {current.get('app', 'Unknown')})")
         return False
     
     def _verify_ready_for_input(self, expected_context: str = "") -> bool:

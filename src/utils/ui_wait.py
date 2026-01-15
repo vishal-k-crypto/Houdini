@@ -116,6 +116,94 @@ class UIWaitSystem:
         else:
             logger.warning("UIWaitSystem: PyObjC not available, using fallback timing")
     
+    def wait_for_app_focus(self, 
+                           app_name: str,
+                           timeout_ms: Optional[int] = None,
+                           check_window: bool = True) -> WaitResult:
+        """
+        Wait for a specific app to become the frontmost (focused) app.
+        
+        CRITICAL FIX: This solves the "Terminal-only" bottleneck by ensuring
+        the agent waits for the launched app to actually become frontmost
+        before trying to read its UI tree.
+        
+        Args:
+            app_name: Name of the app to wait for (e.g., "Safari", "Calculator")
+            timeout_ms: Maximum time to wait
+            check_window: Also wait for window to have a title (app fully loaded)
+            
+        Returns:
+            WaitResult indicating if app became frontmost
+        """
+        max_wait = timeout_ms or self.max_wait_ms
+        start_time = time.time()
+        self.total_waits += 1
+        app_name_lower = app_name.lower()
+        
+        logger.info(f"⏳ Waiting for app focus: '{app_name}'")
+        
+        # Fallback if no accessibility API
+        if not self._api:
+            fallback_ms = min(2000, max_wait)  # Wait longer for app launch
+            time.sleep(fallback_ms / 1000)
+            return WaitResult(
+                success=True,  # Assume success
+                condition=WaitCondition.APP_FRONTMOST,
+                waited_ms=fallback_ms,
+                reason="Fallback timing (no accessibility API)"
+            )
+        
+        poll_interval_sec = self.poll_interval_ms / 1000
+        max_wait_sec = max_wait / 1000
+        last_app = None
+        
+        while True:
+            elapsed = time.time() - start_time
+            
+            if elapsed >= max_wait_sec:
+                waited_ms = elapsed * 1000
+                result = WaitResult(
+                    success=False,
+                    condition=WaitCondition.APP_FRONTMOST,
+                    waited_ms=waited_ms,
+                    reason=f"Timeout waiting for '{app_name}' to become frontmost. Last app: {last_app}"
+                )
+                self.wait_history.append(result)
+                logger.warning(f"❌ Timeout waiting for '{app_name}' (last: {last_app})")
+                return result
+            
+            try:
+                self._api.invalidate_cache()
+                app_info = self._api.get_frontmost_app_info()
+                current_app = app_info.get("app", "").lower()
+                current_window = app_info.get("window", "")
+                last_app = app_info.get("app", "Unknown")
+                
+                # Check if target app is frontmost
+                if app_name_lower in current_app:
+                    # App is frontmost!
+                    if check_window and not current_window:
+                        # Wait for window to appear
+                        logger.debug(f"App '{app_name}' frontmost but no window yet...")
+                        time.sleep(poll_interval_sec)
+                        continue
+                    
+                    waited_ms = elapsed * 1000
+                    result = WaitResult(
+                        success=True,
+                        condition=WaitCondition.APP_FRONTMOST,
+                        waited_ms=waited_ms,
+                        reason=f"App '{app_name}' became frontmost after {waited_ms:.0f}ms"
+                    )
+                    self.wait_history.append(result)
+                    logger.info(f"✅ App '{app_name}' is frontmost after {waited_ms:.0f}ms")
+                    return result
+                    
+            except Exception as e:
+                logger.debug(f"Error checking frontmost app: {e}")
+            
+            time.sleep(poll_interval_sec)
+    
     def _get_ui_snapshot(self) -> Optional[UISnapshot]:
         """Get current UI state snapshot for comparison."""
         if not self._api:

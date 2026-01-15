@@ -55,6 +55,23 @@ except ImportError:
     LOCAL_VISION_AVAILABLE = False
     logger.info("LocalVisionLocalizer not available - install pyobjc-framework-Vision and mlx-vlm")
 
+# Try to import OmniParser V2 (YOLO + Florence-2)
+# This is a high-accuracy fallback for non-accessible apps
+try:
+    from ..utils.omniparser_screen_parser import (
+        OmniParserScreenParser,
+        get_omniparser_screen_parser,
+        omniparser_find_element,
+        OMNIPARSER_AVAILABLE
+    )
+    if OMNIPARSER_AVAILABLE:
+        logger.info("OmniParser V2 available (YOLO + Florence-2)")
+    else:
+        logger.info("OmniParser dependencies not installed")
+except ImportError:
+    OMNIPARSER_AVAILABLE = False
+    logger.info("OmniParser not available - install ultralytics and torch")
+
 
 def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts: int = 3,
                           context: Optional[Dict] = None,
@@ -150,6 +167,17 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
             local_result["method"] = "local_vision"
             local_result["flexibility"] = flexibility_info
             return local_result
+    
+    # Strategy 2.5: OmniParser V2 (YOLO + Florence-2)
+    # High-accuracy detection for non-accessible apps, optimized for Apple Silicon
+    if OMNIPARSER_AVAILABLE and result.get("reason") == "zero_elements":
+        logger.info(f"  🔮 Using OmniParser V2 (threshold: {min_match_prob:.0%})...")
+        omni_result = _omniparser_fallback(action_description, min_match_prob)
+        
+        if omni_result.get("success"):
+            omni_result["method"] = "omniparser"
+            omni_result["flexibility"] = flexibility_info
+            return omni_result
     
     # Strategy 3: Fast coordinate prediction (universal - works for any app)
     if PREDICTOR_AVAILABLE:
@@ -254,6 +282,87 @@ def _local_vision_fallback(action_description: str, min_match_probability: float
         logger.error(f"  LocalVision error: {e}")
         return {"success": False, "error": str(e)}
 
+
+def _omniparser_fallback(action_description: str, min_match_probability: float = 0.5) -> Dict:
+    """
+    Use OmniParser V2 (YOLO + Florence-2) to find and click UI elements.
+    
+    Features:
+    - YOLOv8-based icon detection (fast, precise bounding boxes)
+    - Florence-2 captioning (semantic understanding)
+    - Retina scaling handled automatically (÷2.0 on Mac)
+    - MPS acceleration on Apple Silicon
+    
+    Args:
+        action_description: What element to find and click
+        min_match_probability: Minimum confidence threshold
+        
+    Returns:
+        {
+            "success": True/False,
+            "coordinates": (x, y) or None,
+            "match_probability": float,
+            "element": detected element info,
+            "error": "..." or None
+        }
+    """
+    import pyautogui
+    
+    try:
+        parser = get_omniparser_screen_parser()
+        result = omniparser_find_element(action_description)
+        
+        if not result.found:
+            logger.warning(f"  OmniParser: No element matching '{action_description}'")
+            return {
+                "success": False,
+                "match_probability": result.confidence,
+                "error": "No matching element found"
+            }
+        
+        # Check if match meets threshold
+        if result.confidence < min_match_probability:
+            logger.warning(
+                f"  OmniParser: Match confidence {result.confidence:.0%} "
+                f"below threshold {min_match_probability:.0%}"
+            )
+            return {
+                "success": False,
+                "match_probability": result.confidence,
+                "element": result.label,
+                "coordinates": (result.x, result.y),
+                "error": f"Match confidence too low: {result.confidence:.0%}"
+            }
+        
+        # Execute click (coordinates already Retina-scaled)
+        x, y = result.x, result.y
+        logger.info(f"  OmniParser: Found '{result.label}' at ({x}, {y})")
+        logger.info(f"  Caption: {result.caption[:50] if result.caption else 'N/A'}")
+        logger.info(f"  Confidence: {result.confidence:.0%}")
+        
+        # Move and click with natural motion
+        current_x, current_y = pyautogui.position()
+        distance = ((x - current_x)**2 + (y - current_y)**2)**0.5
+        duration = min(0.5, max(0.1, distance / 1000))
+        
+        pyautogui.moveTo(x, y, duration=duration)
+        pyautogui.click()
+        
+        logger.info(f"  ✅ OmniParser clicked at ({x}, {y})")
+        
+        return {
+            "success": True,
+            "coordinates": (x, y),
+            "match_probability": result.confidence,
+            "element": result.label,
+            "caption": result.caption,
+        }
+        
+    except Exception as e:
+        logger.error(f"  OmniParser error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
 
 def _fast_coordinate_fallback(action_description: str, min_match_probability: float = 0.5) -> Dict:
     """

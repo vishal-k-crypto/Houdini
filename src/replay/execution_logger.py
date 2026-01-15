@@ -360,6 +360,56 @@ class ExecutionLogger:
         """Log text typing."""
         self.log_event(EventType.TEXT_TYPE, {"text": text})
     
+    def log_screenshot_auto(self, trigger: str = "checkpoint", description: str = "") -> Optional[str]:
+        """
+        Automatically capture and log a screenshot.
+        
+        Args:
+            trigger: What triggered this screenshot (e.g., 'batch_start', 'error', 'intervention')
+            description: Human-readable description
+            
+        Returns:
+            Path to saved screenshot, or None if capture failed
+        """
+        if not PYAUTOGUI_AVAILABLE:
+            return None
+        
+        if not self.current_session:
+            return None
+        
+        try:
+            import subprocess
+            import tempfile
+            
+            # Create screenshots directory
+            screenshots_dir = self.sessions_dir.parent / "screenshots"
+            screenshots_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate filename with timestamp and trigger
+            timestamp = int(time.time() * 1000)
+            safe_trigger = "".join(c if c.isalnum() else "_" for c in trigger[:20])
+            filename = f"{self.current_session.task_id}_{timestamp}_{safe_trigger}.png"
+            filepath = screenshots_dir / filename
+            
+            # Capture screen using macOS screencapture (fast and reliable)
+            result = subprocess.run(
+                ["screencapture", "-x", "-C", str(filepath)],
+                capture_output=True, timeout=5
+            )
+            
+            if result.returncode == 0 and filepath.exists():
+                # Log the screenshot event
+                self.log_event(EventType.SCREENSHOT, {
+                    "trigger": trigger,
+                    "description": description or f"Auto-captured on {trigger}",
+                }, screenshot_path=str(filepath))
+                
+                return str(filepath)
+        except Exception:
+            pass
+        
+        return None
+    
     def _start_cursor_tracking(self):
         """Start background cursor position tracking."""
         if not PYAUTOGUI_AVAILABLE:

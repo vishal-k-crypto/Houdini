@@ -106,7 +106,13 @@ class EnhancedExecutor:
                     
                 else:
                     # Element-based click (preferred)
+                    # First try frontmost app for speed
                     element = self.accessibility_api.find_element_by_text(target)
+                    
+                    # If not found in frontmost, search ALL apps
+                    if not element:
+                        logger.debug(f"'{target}' not in frontmost app, searching all apps...")
+                        element = self.accessibility_api.find_element_anywhere(target)
                     
                     if element:
                         # Try native action first
@@ -143,7 +149,13 @@ class EnhancedExecutor:
                 if len(parts) == 2:
                     # "type:field_name:text"
                     field_name, text = parts
+                    # First try frontmost app
                     element = self.accessibility_api.find_element_by_text(field_name)
+                    
+                    # If not found, search all apps
+                    if not element:
+                        logger.debug(f"Field '{field_name}' not in frontmost app, searching all...")
+                        element = self.accessibility_api.find_element_anywhere(field_name)
                     
                     if element:
                         # Try native AXValue (instant!)
