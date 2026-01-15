@@ -273,8 +273,9 @@ if TEXTUAL_AVAILABLE:
             self.log_widget = self.query_one("#thinking-log", ThinkingLog)
             self.status_widget = self.query_one("#status-bar", StatusBar)
             
-            # Start the message processing loop - 50ms for faster updates
-            self.set_interval(0.05, self.process_messages)
+            # Start the message processing loop - 100ms to prevent UI racing ahead
+            # of physical mouse movements (HumanCursor moves can take 500ms+)
+            self.set_interval(0.1, self.process_messages)
             
             # Initial message
             self.log_widget.add_message(
@@ -529,23 +530,35 @@ def show_thinking(component: str, message: str, level: str = "thinking"):
         window.add_thinking(component, message, level)
 
 
-def show_planner_thinking(message: str):
+def show_planner_thinking(message: str, level: str = "thinking"):
     """Show planner thinking."""
-    show_thinking("planner", message, "thinking")
+    show_thinking("planner", message, level)
 
 
-def show_executor_thinking(message: str):
+def show_executor_thinking(message: str, level: str = "thinking"):
     """Show executor thinking."""
-    show_thinking("executor", message, "thinking")
+    show_thinking("executor", message, level)
 
 
-def show_supervisor_thinking(message: str):
+def show_supervisor_thinking(message: str, level: str = "thinking"):
     """Show supervisor thinking."""
-    show_thinking("supervisor", message, "thinking")
+    show_thinking("supervisor", message, level)
 
 
 def set_window_status(status: str):
     """Update window status."""
+    window = get_thinking_window()
+    if window:
+        window.set_status(status)
+
+
+def update_status(status: str):
+    """
+    Update the status bar with a message.
+    
+    This is a lightweight way to show current activity without
+    cluttering the main thinking log.
+    """
     window = get_thinking_window()
     if window:
         window.set_status(status)

@@ -12,10 +12,46 @@ Based on research:
 import time
 import random
 import math
+import subprocess
 from typing import Tuple, List, Optional
 from dataclasses import dataclass
 import pyautogui
 from ..utils.logging import logger
+
+
+def get_macos_scale_factor() -> float:
+    """
+    Detect the screen scale factor for macOS Retina displays.
+    
+    AI models typically return coordinates in pixels (Retina resolution),
+    but PyAutoGUI operates in points. This function returns the scale
+    factor to convert between them.
+    
+    Returns:
+        2.0 for Retina displays, 1.0 for standard displays
+    """
+    try:
+        # Check for Retina scaling on macOS
+        cmd = "system_profiler SPDisplaysDataType | grep -i 'Retina'"
+        result = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode()
+        if "Retina" in result:
+            return 2.0
+    except Exception:
+        pass
+    return 1.0
+
+
+# Cache the scale factor at module load time
+_MACOS_SCALE_FACTOR: Optional[float] = None
+
+
+def get_scale_factor() -> float:
+    """Get cached macOS scale factor."""
+    global _MACOS_SCALE_FACTOR
+    if _MACOS_SCALE_FACTOR is None:
+        _MACOS_SCALE_FACTOR = get_macos_scale_factor()
+        logger.debug(f"Detected macOS scale factor: {_MACOS_SCALE_FACTOR}")
+    return _MACOS_SCALE_FACTOR
 
 try:
     import numpy as np
@@ -228,10 +264,22 @@ class HumanCursor:
         Move cursor to target position with human-like movement.
         
         Args:
-            x, y: Target coordinates
+            x, y: Target coordinates (in AI/pixel coordinates)
             target_size: (width, height) of target element for Fitts's Law
             human_like: Whether to use natural movement (vs instant)
+            
+        Note:
+            On macOS Retina displays, coordinates are automatically scaled
+            from pixels to points to fix coordinate mismatch issues.
         """
+        # Apply macOS Retina scaling (AI gives pixels, PyAutoGUI needs points)
+        scale = get_scale_factor()
+        if scale != 1.0:
+            x = int(x / scale)
+            y = int(y / scale)
+            target_size = (int(target_size[0] / scale), int(target_size[1] / scale))
+            logger.debug(f"Scaled coordinates by {scale}: ({x}, {y})")
+        
         if not human_like:
             pyautogui.moveTo(x, y, duration=0)
             return

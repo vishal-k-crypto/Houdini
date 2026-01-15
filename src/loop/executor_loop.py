@@ -273,7 +273,9 @@ class ExecutorLoop:
         if self.state.current_action_idx == 0:
             logger.info(f"\n▶️ Batch {self.state.current_batch_idx + 1}: {description}")
             try:
-                show_executor_thinking(f"Starting {batch_type.upper()} batch: {description}")
+                # Use status update instead of main log to reduce clutter
+                from ..ui.thinking_window import update_status
+                update_status(f"Batch {self.state.current_batch_idx + 1}: {description}")
             except:
                 pass
             
@@ -523,16 +525,32 @@ class ExecutorLoop:
                 coords = action[6:].split(",")
                 target_x, target_y = int(coords[0]), int(coords[1])
                 
-                # Get current position and move smoothly
+                # Get current position for logging
                 current_x, current_y = pyautogui.position()
                 distance = ((target_x - current_x)**2 + (target_y - current_y)**2)**0.5
                 
                 logger.debug(f"Cursor: ({current_x}, {current_y}) → ({target_x}, {target_y}) [distance: {distance:.0f}px]")
                 
-                # Move cursor with visible motion
-                pyautogui.moveTo(target_x, target_y, duration=0.2)
-                time.sleep(0.05)
-                pyautogui.click()
+                # Import HumanCursor for natural mouse movement
+                from ..utils.cursor_controller import get_cursor
+                cursor = get_cursor()
+                
+                # Update UI BEFORE moving (so user sees what's happening)
+                try:
+                    show_executor_thinking(f"Moving to ({target_x}, {target_y})...")
+                except:
+                    pass
+                
+                # Use HumanCursor for actual movement (blocks until done)
+                cursor.move_to(target_x, target_y)
+                cursor.click()
+                
+                # Update UI AFTER finished
+                try:
+                    show_executor_thinking(f"✓ Clicked at ({target_x}, {target_y})", level="success")
+                except:
+                    pass
+                
                 # Event-driven wait after click
                 self._smart_wait_after("click")
                 
