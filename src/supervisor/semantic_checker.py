@@ -507,6 +507,78 @@ class SemanticChecker:
             reason=f"{'Match' if match else 'Mismatch'}: expected '{expected_app}', got '{actual_app}'",
             should_interrupt=not match
         )
+    
+    def validate_shortcut_for_app(
+        self, 
+        action: str, 
+        app_name: str,
+        intent: str = ""
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Validate that a keyboard shortcut is correct for the given app.
+        
+        Args:
+            action: The action string (e.g., "hotkey:command,f")
+            app_name: The app where the action will be executed
+            intent: What the user is trying to do (e.g., "search")
+        
+        Returns:
+            (is_valid, error_message, suggested_correction)
+        """
+        # App-specific shortcut mappings
+        # Maps: app_name -> wrong_shortcut -> (correct_shortcut, explanation)
+        APP_SHORTCUT_CORRECTIONS = {
+            "music": {
+                "hotkey:command,f": ("hotkey:command,option,f", 
+                    "Cmd+F doesn't search in Apple Music. Use Cmd+Option+F."),
+            },
+            "spotify": {
+                "hotkey:command,f": ("hotkey:command,l", 
+                    "Cmd+F doesn't search in Spotify. Use Cmd+L or Cmd+K."),
+            },
+            "safari": {
+                # Cmd+F is actually valid in Safari for find-in-page
+                # But if intent is "search", suggest Cmd+L
+            },
+            "notes": {
+                "hotkey:command,f": ("hotkey:command,option,f", 
+                    "Cmd+F only finds in current note. Use Cmd+Option+F to search all notes."),
+            },
+            "code": {
+                # Cmd+F is valid for find in file
+                # For search across files, need Cmd+Shift+F
+            },
+        }
+        
+        app_lower = app_name.lower().strip() if app_name else ""
+        action_lower = action.lower().strip() if action else ""
+        intent_lower = intent.lower() if intent else ""
+        
+        # Normalize app name
+        app_key = normalize_app_name(app_lower)
+        
+        # Check for known bad shortcuts
+        if app_key in APP_SHORTCUT_CORRECTIONS:
+            corrections = APP_SHORTCUT_CORRECTIONS[app_key]
+            if action_lower in corrections:
+                correct_action, explanation = corrections[action_lower]
+                return (False, explanation, correct_action)
+        
+        # Special case: Safari Cmd+F when intent is "search" (not "find")
+        if app_key == "safari" and action_lower == "hotkey:command,f":
+            if "search" in intent_lower and "find" not in intent_lower:
+                return (False, 
+                    "Cmd+F is find-in-page in Safari. Use Cmd+L for web search.", 
+                    "hotkey:command,l")
+        
+        # Special case: VS Code Cmd+F when intent is "search files"
+        if app_key in ["code", "vscode"] and action_lower == "hotkey:command,f":
+            if "files" in intent_lower or "project" in intent_lower or "all" in intent_lower:
+                return (False,
+                    "Cmd+F is find in current file. Use Cmd+Shift+F to search all files.",
+                    "hotkey:command,shift,f")
+        
+        return (True, None, None)
 
 
 # ============================================================

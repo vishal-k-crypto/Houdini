@@ -16,6 +16,36 @@ from .execution_confidence import (
 from .lesson_store import lesson_store, LessonStore, Lesson
 from .embedding_client import embedding_client, EmbeddingClient
 
+# New modules for improved learning
+try:
+    from .app_knowledge import app_knowledge, AppKnowledge, AppProfile
+    from .enhanced_rl import enhanced_rl_agent, EnhancedRLAgent
+    APP_KNOWLEDGE_AVAILABLE = True
+    ENHANCED_RL_AVAILABLE = True
+except ImportError:
+    app_knowledge = None
+    enhanced_rl_agent = None
+    APP_KNOWLEDGE_AVAILABLE = False
+    ENHANCED_RL_AVAILABLE = False
+
+# Web interaction policy for vision-first web interactions
+try:
+    from .web_interaction_policy import (
+        get_policy, 
+        WebInteractionPolicy, 
+        check_action_requires_vision,
+        validate_hotkey_for_web,
+        InteractionMode
+    )
+    WEB_POLICY_AVAILABLE = True
+except ImportError:
+    get_policy = None
+    WebInteractionPolicy = None
+    check_action_requires_vision = None
+    validate_hotkey_for_web = None
+    InteractionMode = None
+    WEB_POLICY_AVAILABLE = False
+
 __all__ = [
     "pattern_store",
     "PatternStore", 
@@ -39,4 +69,19 @@ __all__ = [
     "Lesson",
     "embedding_client",
     "EmbeddingClient",
+    # App Knowledge & Enhanced RL
+    "app_knowledge",
+    "AppKnowledge",
+    "AppProfile",
+    "enhanced_rl_agent",
+    "EnhancedRLAgent",
+    "APP_KNOWLEDGE_AVAILABLE",
+    "ENHANCED_RL_AVAILABLE",
+    # Web Interaction Policy
+    "get_policy",
+    "WebInteractionPolicy",
+    "check_action_requires_vision",
+    "validate_hotkey_for_web",
+    "InteractionMode",
+    "WEB_POLICY_AVAILABLE",
 ]

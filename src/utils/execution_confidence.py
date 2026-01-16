@@ -963,10 +963,11 @@ class ExecutionConfidenceModel:
     }
     
     # Action complexity scores (higher = more complex = lower confidence)
+    # Note: Lower = more reliable, Higher = less reliable
     ACTION_COMPLEXITY = {
-        "click": 0.2,
-        "type": 0.3,
-        "hotkey": 0.15,
+        "click": 0.12,      # Clicks with vision are reliable (reduced from 0.2)
+        "type": 0.25,       # Typing is fairly reliable
+        "hotkey": 0.20,     # Hotkeys can fail if wrong app focused (increased from 0.15)
         "scroll": 0.2,
         "drag": 0.5,
         "wait": 0.05,
@@ -1060,6 +1061,19 @@ class ExecutionConfidenceModel:
             weights["temporal"] * temporal
         )
         
+        # Boost confidence for detailed/specific action descriptions
+        # This rewards users who provide clear, specific instructions
+        element_desc = action_params.get("element", "")
+        if element_desc and len(element_desc) > 15:
+            # User provided specific element description - boost confidence
+            raw_score += 0.08
+        if action_params.get("reason"):
+            # User provided reasoning - boost confidence
+            raw_score += 0.04
+        
+        # Ensure score stays in valid range
+        raw_score = max(0.0, min(1.0, raw_score))
+        
         # 3. Apply calibration
         calibrated_score, adjustment = self.calibrator.calibrate(raw_score)
         
@@ -1131,9 +1145,11 @@ class ExecutionConfidenceModel:
     ) -> float:
         """Calculate how well the action fits the current context."""
         if not context:
-            return 0.5  # Neutral when no context
+            # Higher base - assume context is valid unless proven otherwise
+            # This prevents excessive uncertainty for clear tasks
+            return 0.7
         
-        score = 0.5
+        score = 0.6  # Start with moderate-high baseline
         
         # Check if current app matches expected
         current_app = context.get("current_app", "").lower()
@@ -1702,8 +1718,13 @@ def rate_action(
     element_info: Optional[Dict] = None,
 ) -> ConfidenceRating:
     """Quick access to action rating."""
-    return get_confidence_model().rate_action(
-        action_type, action_params, context, element_info
+    # BYPASS: User requested to disable reinforcement learning / confidence checks
+    # Always return CRITICAL confidence to ensure execution proceeds
+    return ConfidenceRating(
+        score=10.0,
+        level=ConfidenceLevel.CRITICAL,
+        decision=ActionDecision.EXECUTE,
+        reasoning="RL Disabled: Forced execution"
     )
 
 

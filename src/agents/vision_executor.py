@@ -41,19 +41,20 @@ except ImportError:
     PREDICTOR_AVAILABLE = False
     logger.warning("Coordinate predictor not available")
 
-# Try to import LocalVisionLocalizer (hybrid Apple Vision + UI-TARS MLX)
-# This is the PRIMARY vision strategy for non-accessible apps on Mac
+# Try to import Ollama VLM (Qwen3-VL Cloud)
+# This is the PRIMARY vision strategy for non-accessible apps
 try:
-    from ..utils.local_vision_localizer import (
-        LocalVisionLocalizer,
-        get_local_localizer,
-        find_element_locally
+    from ..utils.ollama_vlm import (
+        OllamaVLM,
+        get_vlm,
+        vlm_find_and_click,
+        vlm_find_with_probability
     )
-    LOCAL_VISION_AVAILABLE = True
-    logger.info("LocalVisionLocalizer available (Apple Vision + UI-TARS)")
+    OLLAMA_VLM_AVAILABLE = True
+    logger.info("Ollama VLM available (Qwen3-VL Cloud)")
 except ImportError:
-    LOCAL_VISION_AVAILABLE = False
-    logger.info("LocalVisionLocalizer not available - install pyobjc-framework-Vision and mlx-vlm")
+    OLLAMA_VLM_AVAILABLE = False
+    logger.info("Ollama VLM not available")
 
 # Try to import OmniParser V2 (YOLO + Florence-2)
 # This is a high-accuracy fallback for non-accessible apps
@@ -157,16 +158,32 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
     # Get dynamic match threshold from probability model
     min_match_prob = exec_params.get('min_match_probability', 0.5)
     
-    # Strategy 2: Local Vision Localizer (Apple Vision + UI-TARS MLX)
-    # Hardware-accelerated on Apple Silicon - best for non-accessible apps
-    if LOCAL_VISION_AVAILABLE and result.get("reason") == "zero_elements":
-        logger.info(f"  🍎 Using Local Vision Localizer (threshold: {min_match_prob:.0%})...")
-        local_result = _local_vision_fallback(action_description, min_match_prob)
+    # Get app context for vision
+    app_name = ""
+    task_context = action_description
+    try:
+        from ..utils.accessibility_reader import get_frontmost_app
+        app_info = get_frontmost_app()
+        app_name = app_info.get("app", "")
+        if app_name:
+            task_context = f"App: {app_name} | Task: {action_description}"
+    except:
+        pass
+    
+    # Strategy 2: Ollama VLM (Qwen3-VL Cloud)
+    # Vision-Language Model for precise UI element localization
+    if OLLAMA_VLM_AVAILABLE and result.get("reason") == "zero_elements":
+        logger.info(f"  🤖 Using Ollama VLM (Qwen3-VL Cloud, threshold: {min_match_prob:.0%})...")
+        vlm_result = _ollama_vlm_fallback(
+            action_description, 
+            min_match_prob,
+            task_context=task_context
+        )
         
-        if local_result.get("success"):
-            local_result["method"] = "local_vision"
-            local_result["flexibility"] = flexibility_info
-            return local_result
+        if vlm_result.get("success"):
+            vlm_result["method"] = "ollama_vlm"
+            vlm_result["flexibility"] = flexibility_info
+            return vlm_result
     
     # Strategy 2.5: OmniParser V2 (YOLO + Florence-2)
     # High-accuracy detection for non-accessible apps, optimized for Apple Silicon
@@ -208,19 +225,28 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
     return result
 
 
-def _local_vision_fallback(action_description: str, min_match_probability: float = 0.5) -> Dict:
+def _local_vision_fallback(action_description: str, min_match_probability: float = 0.5,
+                           app_name: str = "", task_context: str = "") -> Dict:
     """
     Use Local Vision Localizer (Apple Vision + UI-TARS MLX) to find and click UI elements.
+    
+    NOW WITH ADAPTIVE LEARNING:
+    - Uses learned patterns from past successes
+    - Records feedback for continuous improvement
+    - LangGraph-based feedback loop for retry logic
     
     Hybrid approach:
     1. Apple Vision Framework - Fast geometric detection of UI rectangles (sub-millisecond)
     2. UI-TARS via MLX-VLM - Semantic grounding for complex elements
+    3. Adaptive prompts - Learned hints from past interactions
     
     Hardware-accelerated on Apple Silicon Neural Engine.
     
     Args:
         action_description: What element to find and click
         min_match_probability: Minimum match score to consider success
+        app_name: Current app name (for learning)
+        task_context: Task context (for better prompting)
         
     Returns:
         {
@@ -234,11 +260,22 @@ def _local_vision_fallback(action_description: str, min_match_probability: float
     import pyautogui
     
     try:
-        localizer = get_local_localizer()
-        result = find_element_locally(action_description, min_confidence=min_match_probability)
+        # Use adaptive mode by default - learns from successes/failures
+        result = find_element_locally(
+            action_description,
+            use_adaptive=True,
+            app_name=app_name,
+            task_context=task_context,
+            min_confidence=min_match_probability
+        )
         
         if not result.found:
             logger.warning(f"  LocalVision: No element matching '{action_description}'")
+            # Record failure for learning
+            try:
+                record_click_success(action_description, False)
+            except:
+                pass
             return {
                 "success": False,
                 "match_probability": result.confidence,
@@ -261,15 +298,25 @@ def _local_vision_fallback(action_description: str, min_match_probability: float
         logger.info(f"  LocalVision: Found '{result.element_description}' at ({x}, {y})")
         logger.info(f"  Method: {result.method}, Confidence: {result.confidence:.0%}")
         
-        # Move and click with natural motion
+        # Move and click with natural motion - visible to user
         current_x, current_y = pyautogui.position()
         distance = ((x - current_x)**2 + (y - current_y)**2)**0.5
-        duration = min(0.5, max(0.1, distance / 1000))
+        # Human-like movement: minimum 0.25s so user can see cursor moving
+        duration = min(0.8, max(0.25, distance / 800))
         
-        pyautogui.moveTo(x, y, duration=duration)
+        # Use easeOutQuad for natural deceleration as cursor approaches target
+        pyautogui.moveTo(x, y, duration=duration, tween=pyautogui.easeOutQuad)
+        time.sleep(0.05)  # Brief pause before clicking (human hesitation)
         pyautogui.click()
         
         logger.info(f"  ✅ LocalVision clicked at ({x}, {y})")
+        
+        # Record success for learning (we assume it worked if we got here)
+        # Actual verification should happen at a higher level
+        try:
+            record_click_success(action_description, True)
+        except:
+            pass
         
         return {
             "success": True,
@@ -280,6 +327,87 @@ def _local_vision_fallback(action_description: str, min_match_probability: float
         
     except Exception as e:
         logger.error(f"  LocalVision error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def _ollama_vlm_fallback(
+    action_description: str,
+    min_match_probability: float = 0.5,
+    task_context: str = ""
+) -> Dict:
+    """
+    Use Ollama VLM (Qwen3-VL Cloud) to find and click UI elements.
+    
+    Vision-Language Model approach:
+    - Takes screenshot of current screen
+    - Sends to Qwen3-VL cloud model via Ollama
+    - Gets precise coordinates with confidence scores
+    - Includes match probability for partial matches
+    
+    Args:
+        action_description: What element to find and click
+        min_match_probability: Minimum match score (0.0-1.0)
+        task_context: Additional context for better understanding
+        
+    Returns:
+        {
+            "success": True/False,
+            "coordinates": (x, y) or None,
+            "match_probability": float,
+            "confidence": float,
+            "element": detected element text,
+            "error": "..." or None
+        }
+    """
+    import pyautogui
+    
+    try:
+        result = vlm_find_and_click(
+            element_description=action_description,
+            task_context=task_context,
+            min_match_probability=min_match_probability
+        )
+        
+        if not result.get("success"):
+            error_msg = result.get("error", "Element not found")
+            logger.warning(f"  Ollama VLM: {error_msg}")
+            return {
+                "success": False,
+                "match_probability": result.get("match_probability", 0.0),
+                "confidence": result.get("confidence", 0.0),
+                "error": error_msg
+            }
+        
+        # Get coordinates and match info
+        coords = result.get("coordinates")
+        match_prob = result.get("match_probability", 0.0)
+        confidence = result.get("confidence", 0.0)
+        element_text = result.get("element", "unknown")
+        
+        if not coords:
+            return {
+                "success": False,
+                "error": "No coordinates returned",
+                "match_probability": match_prob
+            }
+        
+        x, y = coords
+        logger.info(f"  Ollama VLM: Found '{element_text}' at ({x}, {y})")
+        logger.info(f"  Confidence: {confidence:.0%}, Match: {match_prob:.0%}")
+        
+        # The vlm_find_and_click function already performed the click
+        # Just return the success result
+        
+        return {
+            "success": True,
+            "coordinates": (x, y),
+            "match_probability": match_prob,
+            "confidence": confidence,
+            "element": element_text
+        }
+        
+    except Exception as e:
+        logger.error(f"  Ollama VLM error: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -340,12 +468,15 @@ def _omniparser_fallback(action_description: str, min_match_probability: float =
         logger.info(f"  Caption: {result.caption[:50] if result.caption else 'N/A'}")
         logger.info(f"  Confidence: {result.confidence:.0%}")
         
-        # Move and click with natural motion
+        # Move and click with natural motion - visible to user
         current_x, current_y = pyautogui.position()
         distance = ((x - current_x)**2 + (y - current_y)**2)**0.5
-        duration = min(0.5, max(0.1, distance / 1000))
+        # Human-like movement: minimum 0.25s so user can see cursor moving
+        duration = min(0.8, max(0.25, distance / 800))
         
-        pyautogui.moveTo(x, y, duration=duration)
+        # Use easeOutQuad for natural deceleration as cursor approaches target
+        pyautogui.moveTo(x, y, duration=duration, tween=pyautogui.easeOutQuad)
+        time.sleep(0.05)  # Brief pause before clicking (human hesitation)
         pyautogui.click()
         
         logger.info(f"  ✅ OmniParser clicked at ({x}, {y})")

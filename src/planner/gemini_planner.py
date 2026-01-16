@@ -12,10 +12,43 @@ from ..utils.action_optimizer import action_optimizer, ActionOptimizer
 from ..utils.lesson_store import lesson_store
 from ..ui.thinking_window import show_planner_thinking, show_thinking
 
+# Import app knowledge for action validation
+try:
+    from ..utils.app_knowledge import app_knowledge, AppKnowledge
+    APP_KNOWLEDGE_AVAILABLE = True
+except ImportError:
+    APP_KNOWLEDGE_AVAILABLE = False
+    app_knowledge = None
+
+# Import web interaction policy for website action validation
+try:
+    from ..utils.web_interaction_policy import get_policy, WebInteractionPolicy
+    WEB_POLICY_AVAILABLE = True
+except ImportError:
+    WEB_POLICY_AVAILABLE = False
+    get_policy = None
+
 TASK_HISTORY_FILE = Path(__file__).parent.parent.parent / "data" / "task_history.json"
 
 PLANNING_RULES = """
 ## Smart Planning Rules
+
+### ⚠️ CRITICAL: VISION-FIRST FOR WEBSITES
+**When interacting with ANY website (YouTube, Google, etc.), use VISION not hotkeys!**
+
+Website hotkeys are UNRELIABLE:
+- Cmd+F is "find in page", NOT website search
+- Cmd+K opens browser command bar, NOT website search
+- Each website has different shortcuts (or none at all)
+
+**For website interactions:**
+- ✅ Use VISION: "click the search field", "click first video thumbnail"
+- ❌ DON'T use hotkeys: "hotkey:command,f" for website search
+
+**Exception - Browser CHROME control is OK:**
+- Cmd+L (focus URL bar to navigate)
+- Cmd+T (new tab)
+- Cmd+W (close tab)
 
 ### TWO TYPES OF ACTIONS:
 1. **BLIND actions** (no screen check needed) - can be batched together:
@@ -34,16 +67,45 @@ PLANNING_RULES = """
 - Example: "Open Safari, go to URL, search" = ONE blind subtask
 - Only split when VISION action is needed
 
-### SAFARI SHORTCUTS:
+### ⚠️ CRITICAL: APP-SPECIFIC SEARCH SHORTCUTS
+Different apps use DIFFERENT shortcuts for search! Using the wrong one causes failures.
+
+| App           | Search Shortcut       | WRONG Shortcut | Notes                    |
+|---------------|----------------------|----------------|--------------------------|
+| **Apple Music** | `Cmd+Option+F`       | ~~Cmd+F~~      | Cmd+F does nothing useful |
+| **Spotify**   | `Cmd+L` or `Cmd+K`   | ~~Cmd+F~~      | Cmd+F doesn't search     |
+| **Safari**    | `Cmd+L` (URL bar)    | ~~Cmd+F~~      | Cmd+F is find-in-page    |
+| **Finder**    | `Cmd+F`              | ✓ Correct      | Cmd+F works in Finder    |
+| **WhatsApp**  | `Cmd+F`              | ✓ Correct      | Cmd+F works in WhatsApp  |
+| **Notes**     | `Cmd+Option+F`       | ~~Cmd+F~~      | Cmd+F finds in note only |
+| **VS Code**   | `Cmd+Shift+F`        | ~~Cmd+F~~      | Cmd+F is find in file    |
+
+### SAFARI/BROWSER SHORTCUTS:
 - Cmd+Space → type "Safari" → Enter (open Safari)
 - Cmd+T (new tab)
-- Cmd+L (focus URL/search bar)
+- Cmd+L (focus URL/search bar - USE THIS FOR WEB SEARCH, NOT Cmd+F)
 - Type and Enter (search with default engine - Google)
 
-### YOUTUBE NAVIGATION:
+### APPLE MUSIC SHORTCUTS:
+- Cmd+Option+F (search for songs - NOT Cmd+F!)
+- Space (play/pause)
+- Cmd+Right/Left (next/previous track)
+
+### SPOTIFY SHORTCUTS:
+- Cmd+L or Cmd+K (search bar - NOT Cmd+F!)
+- Space (play/pause)
+
+### YOUTUBE NAVIGATION (VISION REQUIRED):
 - Navigate to channel page: youtube.com/@{channel_name}/videos
 - First video in grid is the latest/most recent upload
-- Use direct URL navigation when possible to avoid vision actions
+- Use direct URL navigation to reach the page, then VISION to click
+- **To search on YouTube:**
+  1. Navigate to youtube.com via URL bar (Cmd+L)
+  2. Wait for page to load (3 seconds)
+  3. VISION: "click the search box at top of page"
+  4. Type search query
+  5. Press Enter
+  6. VISION: "click the first video result"
 
 ### VISION ACTION DESCRIPTIONS:
 When vision actions are needed, be SPECIFIC:
@@ -56,7 +118,8 @@ When vision actions are needed, be SPECIFIC:
 - "search X" → blind: [Cmd+Space, "Safari", Enter, Cmd+L, type "X", Enter]
 - "open X and search Y" → blind: [Cmd+Space, "Safari", Enter, Cmd+L, "Y", Enter]
 - "open latest video from {creator}" → blind: [Cmd+Space, Safari, Enter, Cmd+L, youtube.com/@{creator}/videos, Enter] + vision: click first video thumbnail
-- "click first result" → vision: click first search result in main content area
+- "play song X on Apple Music" → blind: [Cmd+Space, "Music", Enter, wait:2, Cmd+Option+F, type "X", Enter]
+- "play song X on Spotify" → blind: [Cmd+Space, "Spotify", Enter, wait:2.5, Cmd+L, type "X", Enter]
 """
 
 
@@ -106,6 +169,174 @@ class GeminiPlanner:
         self.pattern_store = pattern_store
         self.action_optimizer = action_optimizer
         self.lesson_store = lesson_store
+        self.app_knowledge = app_knowledge if APP_KNOWLEDGE_AVAILABLE else None
+
+    def _detect_target_app(self, task: str) -> Optional[str]:
+        """Detect which app the task is targeting."""
+        task_lower = task.lower()
+        
+        app_keywords = {
+            "Music": ["apple music", "music app", "play song", "play music"],
+            "Spotify": ["spotify"],
+            "Safari": ["safari", "browse", "website", "web search"],
+            "Finder": ["finder", "folder", "file"],
+            "WhatsApp": ["whatsapp"],
+            "Messages": ["messages", "imessage", "text message"],
+            "Notes": ["notes app", "apple notes"],
+            "Terminal": ["terminal", "command line"],
+            "Code": ["vs code", "vscode", "visual studio code"],
+        }
+        
+        for app_name, keywords in app_keywords.items():
+            for keyword in keywords:
+                if keyword in task_lower:
+                    return app_name
+
+            def _is_website_task(self, task: str) -> bool:
+                """Check if task involves website interaction."""
+                task_lower = task.lower()
+        
+                website_keywords = [
+                    "youtube", "google", "facebook", "twitter", "instagram",
+                    "reddit", "amazon", "netflix", "github", "stackoverflow",
+                    "website", "web page", "search on", "find on", "click video",
+                    "click link", "click button on", "play video on", "browse to"
+                ]
+        
+                return any(kw in task_lower for kw in website_keywords)
+    
+            def _convert_website_hotkeys_to_vision(self, batch: Dict, task: str) -> Dict:
+                """
+                Convert hotkey-based actions to vision-based actions for website tasks.
+        
+                This is the core of vision-first web interaction.
+                """
+                if not WEB_POLICY_AVAILABLE or batch.get("type") != "blind":
+                    return batch
+        
+                policy = get_policy()
+                actions = batch.get("actions", [])
+                task_lower = task.lower()
+        
+                # Check if this is a browser task
+                target_app = self._detect_target_app(task)
+                if not target_app or not policy.is_browser_app(target_app):
+                    return batch
+        
+                # Check if this involves website interaction
+                if not self._is_website_task(task):
+                    return batch
+        
+                # Convert problematic hotkeys to vision actions
+                converted_actions = []
+                vision_needed = False
+        
+                for i, action in enumerate(actions):
+                    action_str = str(action).lower()
+            
+                    # Check for forbidden hotkeys
+                    if "hotkey:" in action_str:
+                        # Extract hotkey
+                        parts = action.split(":", 1)
+                        if len(parts) == 2:
+                            hotkey = parts[1].strip()
+                            is_forbidden, reason = policy.is_hotkey_forbidden(
+                                target_app,
+                                hotkey,
+                                action_context=task
+                            )
+                    
+                            if is_forbidden:
+                                logger.warning(f"⚠️ Forbidden hotkey detected: {hotkey}")
+                                logger.warning(f"   Reason: {reason}")
+                        
+                                # Convert to vision action
+                                if "search" in task_lower or "find" in task_lower:
+                                    # Convert search hotkey to vision
+                                    vision_needed = True
+                                    logger.info(f"   ✅ Converting to vision action")
+                                    # Skip this hotkey, will be handled by vision batch below
+                                    continue
+                                else:
+                                    # Keep other hotkeys but warn
+                                    converted_actions.append(action)
+                            else:
+                                converted_actions.append(action)
+                        else:
+                            converted_actions.append(action)
+                    else:
+                        converted_actions.append(action)
+        
+                # If we removed hotkeys, we need to add a vision action instead
+                if vision_needed:
+                    # Update the batch description
+                    batch["actions"] = converted_actions
+                    batch["requires_vision"] = True
+            
+                    # Log the conversion
+                    try:
+                        show_planner_thinking(f"Converted website hotkeys to vision-based interaction")
+                    except:
+                        pass
+        
+                return batch
+        
+        return None
+
+    def _validate_and_correct_actions(self, actions: List[str], target_app: Optional[str]) -> List[str]:
+        """
+        Validate actions against app-specific knowledge and correct mistakes.
+        
+        This prevents common errors like using Cmd+F in Apple Music when
+        Cmd+Option+F is needed for search.
+        """
+        if not self.app_knowledge or not target_app:
+            return actions
+        
+        corrected = []
+        corrections_made = []
+        
+        for action in actions:
+            is_valid, correction_msg = self.app_knowledge.validate_action(target_app, action)
+            
+            if not is_valid:
+                # Try to get the correct action
+                logger.warning(f"⚠️ Invalid action for {target_app}: {action}")
+                logger.warning(f"   Reason: {correction_msg}")
+                
+                # Check if this is a search-related mistake
+                if "search" in action.lower() or ("command,f" in action and target_app in ["Music", "Spotify"]):
+                    correct_keys = self.app_knowledge.get_search_shortcut(target_app)
+                    if correct_keys:
+                        corrected_action = f"hotkey:{','.join(correct_keys)}"
+                        corrected.append(corrected_action)
+                        corrections_made.append(f"Changed '{action}' to '{corrected_action}' for {target_app}")
+                        logger.info(f"   ✅ Corrected to: {corrected_action}")
+                        continue
+                
+                # If we can't correct, still include the action but log warning
+                corrected.append(action)
+            else:
+                corrected.append(action)
+        
+        if corrections_made:
+            try:
+                show_planner_thinking(f"Corrected {len(corrections_made)} action(s) for {target_app}")
+            except:
+                pass
+            
+            # Record as a lesson for future
+            if self.lesson_store:
+                for correction in corrections_made:
+                    self.lesson_store.record_failure(
+                        component="planner",
+                        task=f"Action for {target_app}",
+                        error_type="wrong_shortcut",
+                        error_details=correction,
+                        suggestion=f"Use app-specific shortcuts for {target_app}"
+                    )
+        
+        return corrected
 
     def plan(self, task: str) -> List[Dict]:
         """
@@ -179,6 +410,15 @@ Output JSON only:"""
             # 4. Optimize the plan using learned patterns
             batches = self._optimize_batches(batches, task)
             
+            # 5. Detect target app and validate/correct actions
+            target_app = self._detect_target_app(task)
+            if target_app:
+                logger.info(f"🎯 Target app detected: {target_app}")
+                batches = self._validate_batches(batches, target_app)
+            
+            # 6. Validate and convert website hotkey actions to vision
+            batches = self._validate_and_convert_website_actions(batches, task)
+            
             self.memory.remember(task, {"batches": batches})
             logger.info(f"Plan: {len(batches)} batches")
             
@@ -243,6 +483,44 @@ Output JSON only:"""
                     hints.append(f"  Optimal avg wait: {avg_wait:.1f}s")
         
         return "\n".join(hints) + "\n" if len(hints) > 1 else ""
+    
+    def _validate_batches(self, batches: List[Dict], target_app: str) -> List[Dict]:
+        """
+        Validate all batches against app-specific knowledge.
+        Corrects common mistakes like using wrong shortcuts.
+        """
+        validated_batches = []
+        
+        for batch in batches:
+            if batch.get("type") == "blind":
+                actions = batch.get("actions", [])
+                if actions:
+                    # Validate and correct actions for the target app
+                    corrected_actions = self._validate_and_correct_actions(actions, target_app)
+                    batch["actions"] = corrected_actions
+            
+            validated_batches.append(batch)
+        
+        return validated_batches
+    
+        def _validate_and_convert_website_actions(self, batches: List[Dict], task: str) -> List[Dict]:
+            """
+            Validate and convert hotkey actions to vision actions for website tasks.
+            This ensures website interactions use vision instead of unreliable hotkeys.
+            """
+            if not WEB_POLICY_AVAILABLE:
+                return batches
+        
+            # Check if this is a website task
+            if not self._is_website_task(task):
+                return batches
+        
+            validated = []
+            for batch in batches:
+                converted_batch = self._convert_website_hotkeys_to_vision(batch, task)
+                validated.append(converted_batch)
+        
+            return validated
     
     def _optimize_batches(self, batches: List[Dict], task: str) -> List[Dict]:
         """Optimize batches using the action optimizer."""
