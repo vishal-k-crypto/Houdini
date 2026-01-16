@@ -16,10 +16,12 @@ import json
 import time
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, TextIO
 from pathlib import Path
 from enum import Enum
 import threading
+import atexit
+import signal
 
 # pyautogui is optional - only needed for cursor tracking during live execution
 try:
@@ -189,11 +191,21 @@ class ExecutionLogger:
         self.cursor_sample_rate_ms = 50  # Sample every 50ms
         self.last_cursor_pos = (0, 0)
         
+        # Live recording (interrupt-safe persistence)
+        self._live_file: Optional[TextIO] = None
+        self._live_filepath: Optional[Path] = None
+        self._live_lock = threading.Lock()
+        
+        # Register cleanup handlers for graceful shutdown
+        atexit.register(self._emergency_cleanup)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        # Note: SIGINT is handled by KeyboardInterrupt in Python
+        
         self._initialized = True
     
     def start_session(self, task_id: str, task_description: str, 
                       metadata: Optional[Dict] = None) -> ExecutionSession:
-        """Start a new execution session."""
+        """Start a new execution session with live recording."""
         self.session_start_time_ms = int(time.time() * 1000)
         
         self.current_session = ExecutionSession(
@@ -202,6 +214,9 @@ class ExecutionLogger:
             started_at=datetime.now().isoformat(),
             metadata=metadata or {}
         )
+        
+        # Start live recording (interrupt-safe)
+        self._start_live_recording(task_id)
         
         # Log task start event
         self.log_event(EventType.TASK_START, {
@@ -234,7 +249,10 @@ class ExecutionLogger:
         self.current_session.completed_at = datetime.now().isoformat()
         self.current_session.success = success
         
-        # Save to disk
+        # Stop live recording and save final session
+        self._stop_live_recording(mark_complete=True)
+        
+        # Save complete session JSON
         self._save_session()
         
         # Clear current session
@@ -268,6 +286,9 @@ class ExecutionLogger:
         )
         
         self.current_session.events.append(event)
+        
+        # Write to live file immediately (interrupt-safe)
+        self._write_live_event(event)
     
     def log_cursor_move(self, x: int, y: int):
         """Log a cursor movement (sampled)."""
@@ -470,7 +491,169 @@ class ExecutionLogger:
         for filepath in self.get_session_files():
             if filepath.name.startswith(task_id):
                 return self.load_session(filepath)
+        
+        # Also check for incomplete live sessions
+        live_files = self._get_live_session_files()
+        for filepath in live_files:
+            if filepath.stem.startswith(task_id):
+                return self._recover_live_session(filepath)
+        
         return None
+    
+    # ========== LIVE RECORDING METHODS (Interrupt-Safe) ==========
+    
+    def _start_live_recording(self, task_id: str):
+        """Start live recording to JSONL file for interrupt-safe persistence."""
+        with self._live_lock:
+            try:
+                # Create live file path
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"{task_id}_{timestamp}.live.jsonl"
+                self._live_filepath = self.sessions_dir / filename
+                
+                # Open file for append (each event will be written immediately)
+                self._live_file = open(self._live_filepath, 'a', encoding='utf-8')
+                
+                # Write session header as first line
+                header = {
+                    "_type": "session_header",
+                    "task_id": task_id,
+                    "task_description": self.current_session.task_description if self.current_session else "",
+                    "started_at": datetime.now().isoformat(),
+                    "metadata": self.current_session.metadata if self.current_session else {},
+                }
+                self._live_file.write(json.dumps(header) + "\n")
+                self._live_file.flush()
+                
+            except Exception as e:
+                # Don't fail task execution if live recording fails
+                import logging
+                logging.warning(f"Could not start live recording: {e}")
+                self._live_file = None
+                self._live_filepath = None
+    
+    def _write_live_event(self, event: ExecutionEvent):
+        """Write event to live file immediately with flush."""
+        with self._live_lock:
+            if not self._live_file:
+                return
+            
+            try:
+                event_dict = event.to_dict()
+                event_dict["_type"] = "event"
+                self._live_file.write(json.dumps(event_dict) + "\n")
+                self._live_file.flush()  # Ensure data hits disk immediately
+            except Exception:
+                pass  # Don't fail task execution if write fails
+    
+    def _stop_live_recording(self, mark_complete: bool = False):
+        """Stop live recording and optionally mark session as complete."""
+        with self._live_lock:
+            if not self._live_file:
+                return
+            
+            try:
+                if mark_complete:
+                    # Write completion marker
+                    footer = {
+                        "_type": "session_complete",
+                        "completed_at": datetime.now().isoformat(),
+                        "success": self.current_session.success if self.current_session else False,
+                    }
+                    self._live_file.write(json.dumps(footer) + "\n")
+                    self._live_file.flush()
+                
+                self._live_file.close()
+                
+                # If complete, we can delete the live file since full JSON was saved
+                if mark_complete and self._live_filepath and self._live_filepath.exists():
+                    self._live_filepath.unlink()
+                    
+            except Exception:
+                pass
+            finally:
+                self._live_file = None
+                self._live_filepath = None
+    
+    def _emergency_cleanup(self):
+        """Emergency cleanup called by atexit - ensures live file is closed."""
+        with self._live_lock:
+            if self._live_file:
+                try:
+                    # Write interrupt marker
+                    footer = {
+                        "_type": "session_interrupted",
+                        "interrupted_at": datetime.now().isoformat(),
+                    }
+                    self._live_file.write(json.dumps(footer) + "\n")
+                    self._live_file.flush()
+                    self._live_file.close()
+                except Exception:
+                    pass
+                finally:
+                    self._live_file = None
+    
+    def _signal_handler(self, signum, frame):
+        """Handle termination signals gracefully."""
+        self._emergency_cleanup()
+        # Re-raise to allow normal termination
+        signal.signal(signum, signal.SIG_DFL)
+        signal.raise_signal(signum)
+    
+    def _get_live_session_files(self) -> List[Path]:
+        """Get all incomplete live session files."""
+        return sorted(self.sessions_dir.glob("*.live.jsonl"), reverse=True)
+    
+    def _recover_live_session(self, filepath: Path) -> Optional[ExecutionSession]:
+        """Recover a session from an incomplete live JSONL file."""
+        try:
+            events = []
+            header = None
+            footer = None
+            
+            with open(filepath, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    data = json.loads(line)
+                    record_type = data.pop("_type", "event")
+                    
+                    if record_type == "session_header":
+                        header = data
+                    elif record_type in ("session_complete", "session_interrupted"):
+                        footer = data
+                    elif record_type == "event":
+                        events.append(ExecutionEvent.from_dict(data))
+            
+            if not header:
+                return None
+            
+            # Reconstruct session
+            session = ExecutionSession(
+                task_id=header.get("task_id", "unknown"),
+                task_description=header.get("task_description", ""),
+                started_at=header.get("started_at", ""),
+                completed_at=footer.get("completed_at") if footer else None,
+                success=footer.get("success", False) if footer else False,
+                events=events,
+                metadata=header.get("metadata", {}),
+            )
+            
+            return session
+            
+        except Exception:
+            return None
+    
+    def get_incomplete_sessions(self) -> List[ExecutionSession]:
+        """Get all incomplete (interrupted) sessions that can be recovered."""
+        sessions = []
+        for filepath in self._get_live_session_files():
+            session = self._recover_live_session(filepath)
+            if session:
+                sessions.append(session)
+        return sessions
 
 
 # Global logger instance

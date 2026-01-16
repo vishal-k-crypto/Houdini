@@ -964,18 +964,19 @@ class ExecutionConfidenceModel:
     
     # Action complexity scores (higher = more complex = lower confidence)
     # Note: Lower = more reliable, Higher = less reliable
+    # IMPROVED: Reduced penalties to increase trust in common actions
     ACTION_COMPLEXITY = {
-        "click": 0.12,      # Clicks with vision are reliable (reduced from 0.2)
-        "type": 0.25,       # Typing is fairly reliable
-        "hotkey": 0.20,     # Hotkeys can fail if wrong app focused (increased from 0.15)
-        "scroll": 0.2,
-        "drag": 0.5,
-        "wait": 0.05,
-        "open_app": 0.25,
-        "code": 0.7,
-        "multi_step": 0.6,
-        "ocr_based": 0.5,
-        "coordinate": 0.4,
+        "click": 0.08,      # Clicks with vision are very reliable (reduced from 0.12)
+        "type": 0.15,       # Typing is very reliable (reduced from 0.25)
+        "hotkey": 0.15,     # Hotkeys are reliable when app is focused (reduced from 0.20)
+        "scroll": 0.15,     # Scrolling is reliable (reduced from 0.2)
+        "drag": 0.4,        # Drag reduced slightly (from 0.5)
+        "wait": 0.02,       # Waiting is extremely reliable (reduced from 0.05)
+        "open_app": 0.18,   # Opening apps is reliable (reduced from 0.25)
+        "code": 0.6,        # Code actions slightly more trusted (from 0.7)
+        "multi_step": 0.5,  # Multi-step slightly more trusted (from 0.6)
+        "ocr_based": 0.4,   # OCR more trusted (from 0.5)
+        "coordinate": 0.3,  # Coordinates more trusted (from 0.4)
     }
     
     # Component weights for ensemble
@@ -1045,12 +1046,13 @@ class ExecutionConfidenceModel:
         temporal = self._calculate_temporal_confidence(action_type, context)
         
         # 2. Combine scores (weighted average)
+        # IMPROVED: Increased weight on historical and context, reduced complexity penalty
         weights = {
-            "historical": 0.30,
-            "context_fit": 0.25,
-            "complexity": 0.15,
-            "element_certainty": 0.20,
-            "temporal": 0.10,
+            "historical": 0.35,      # Increased from 0.30 - trust past success more
+            "context_fit": 0.30,     # Increased from 0.25 - trust context more
+            "complexity": 0.10,      # Reduced from 0.15 - penalize complexity less
+            "element_certainty": 0.20,  # Keep same
+            "temporal": 0.05,        # Reduced from 0.10 - time matters less
         }
         
         raw_score = (

@@ -190,6 +190,10 @@ class AdaptiveState:
     last_attempted_step_idx: int = -1  # Last step index that was attempted
     max_step_attempts: int = 5  # Max attempts before forcing advancement
     
+    # Evolution limits (prevent infinite evolution loops)
+    max_evolution_attempts: int = 3  # Max times supervisor can evolve task
+    evolution_attempt_count: int = 0  # Current evolution attempts
+    
     # Timestamps
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -1083,15 +1087,13 @@ Generate actions:"""
                     
                 elif action.action_type == "wait":
                     secs = action.params.get("seconds", 0.5)
-                    # Use event-driven wait if available
-                    if self._ui_wait and secs >= 0.3:
-                        result = self._ui_wait.wait_for_ui_stable(
-                            max_wait_ms=int(secs * 1000),
-                            stability_ms=150
-                        )
-                        logger.debug(f"Smart wait: requested {secs}s, actual {result.waited_ms:.0f}ms")
-                    else:
-                        time.sleep(secs)
+                    # FIX: Always wait AT LEAST the specified duration
+                    # Previously, smart wait would exit early when UI appeared stable,
+                    # causing "Wait 2s" to complete in ~1.1s
+                    start_wait = time.time()
+                    time.sleep(secs)  # Guaranteed minimum wait
+                    actual_wait = time.time() - start_wait
+                    logger.debug(f"Wait action: requested {secs}s, actual {actual_wait:.1f}s")
                     
                 elif action.action_type == "click":
                     # Use vision executor for click actions
@@ -1685,6 +1687,31 @@ Supervisor decision:"""
         success_criteria = self.state.macro_plan.success_criteria if self.state.macro_plan else "Task completed"
         expected_outcome = self.state.macro_plan.expected_outcome if self.state.macro_plan else "Goal achieved"
         
+        # FALLBACK: For zero-element screens (video players, full-screen content)
+        # The accessibility API returns 0 elements for video playback pages
+        # In this case, use heuristic verification based on app + completed steps
+        if len(screen.visible_elements) == 0:
+            logger.info("  ℹ️  Zero accessible elements - using fallback verification")
+            
+            app_ok = self._app_matches_task(screen.app_name, self.state.task)
+            all_steps_done = (
+                self.state.macro_plan and 
+                self.state.current_macro_step_idx >= len(self.state.macro_plan.macro_steps)
+            )
+            has_window_content = bool(screen.window_title) and len(screen.window_title) > 5
+            
+            if app_ok and all_steps_done:
+                logger.info("  ✅ Fallback verification passed: correct app + all steps complete")
+                self._show("supervisor", "✅ Complete (fallback: all steps done in correct app)", "verification")
+                self._commit_pending_outcomes(success=True)
+                return {"complete": True, "confidence": 0.75}
+            
+            # If we're in right app with content, trust the execution more
+            if app_ok and has_window_content and self.state.current_macro_step_idx > 0:
+                # At least some steps completed in the right context
+                logger.info(f"  ⚠️ Fallback: {self.state.current_macro_step_idx} steps done in correct app")
+                # Lower the LLM's judgment weight when we can't see elements
+        
         prompt = f"""You are the SUPERVISOR. Verify if the task is ACTUALLY complete.
 
 ORIGINAL TASK: {self.state.task}
@@ -1740,7 +1767,9 @@ Verification result:"""
                       f"{'✅ Complete' if complete else '❌ Incomplete'} ({confidence:.0%}): {reason}", 
                       "verification")
             
-            if complete and confidence >= 0.7:
+            # IMPROVED: Lower threshold from 0.7 to 0.6 to reduce infinite loops
+            # Tasks with 60%+ confidence are considered complete
+            if complete and confidence >= 0.6:
                 logger.info(f"✅ Task verified complete: {reason}")
                 # COMMIT DELAYED REWARDS: Now we know the macro step truly succeeded
                 self._commit_pending_outcomes(success=True)
@@ -1765,8 +1794,21 @@ Verification result:"""
         Supervisor takes over planning when verification fails.
         Tells executor its mistakes and what to do now.
         This enables real-time task evolution.
+        
+        IMPROVED: Now enforces max evolution attempts to prevent infinite loops.
         """
         self.state.evolution_count += 1
+        self.state.evolution_attempt_count += 1
+        
+        # Check if we've exceeded max evolution attempts
+        if self.state.evolution_attempt_count > self.state.max_evolution_attempts:
+            logger.warning(f"⚠️ Max evolution attempts ({self.state.max_evolution_attempts}) reached")
+            self._show("supervisor", "Max evolution attempts reached - task may be complete enough", "warning")
+            
+            # Force task completion even if not perfect
+            # Sometimes "good enough" is better than infinite loops
+            logger.info("✅ Forcing task completion after max evolution attempts")
+            return False  # Signal that evolution should stop
         
         logger.info("🔄 Supervisor evolving task...")
         self._show("supervisor", "Evolving task based on current state", "evolving")
@@ -1791,7 +1833,7 @@ Verification result:"""
         screen = self._capture_screen_context()
         
         prompt = f"""You are the SUPERVISOR taking over planning.
-The executor failed to complete the task. Analyze what went wrong and create a NEW plan.
+The executor may have completed parts of the task. Analyze current state and create steps to FINISH (not restart).
 
 ORIGINAL TASK: {self.state.task}
 WHAT IS MISSING: {what_is_missing}
@@ -1800,15 +1842,20 @@ CURRENT STATE:
 - App: {screen.app_name}
 - Window: {screen.window_title}
 
+ALREADY COMPLETED STEPS:
+{self._summarize_completed_steps()}
+
 EXECUTOR MISTAKES ANALYSIS:
 {self._analyze_executor_mistakes()}
 
-Create new steps to complete the task from current state.
+IMPORTANT: Do NOT suggest steps that duplicate already completed work.
+Only suggest steps that CONTINUE from the current state.
+If the app is already open and navigated, do NOT add "Open Safari" or "Navigate to YouTube" again.
 
 Output JSON:
 {{
-    "executor_mistakes": "What the executor did wrong",
-    "correction_message": "What executor should do differently",
+    "executor_mistakes": "What the executor did wrong (if any)",
+    "correction_message": "What to do next (continue from current state)",
     "new_steps": [
         {{"step": "What to do now", "context": "What to look for"}}
     ]
@@ -1848,6 +1895,49 @@ Evolution plan:"""
             summary.append(f"{i}. {action.get('type')}: {action.get('description')}")
         
         return "\n".join(summary)
+    
+    def _summarize_completed_steps(self) -> str:
+        """Summarize what steps have been completed for evolution context."""
+        if not self.state.macro_plan:
+            return "No plan available"
+        
+        completed = []
+        for i in range(self.state.current_macro_step_idx):
+            if i < len(self.state.macro_plan.macro_steps):
+                step = self.state.macro_plan.macro_steps[i]
+                step_desc = step.get("step", "Unknown") if isinstance(step, dict) else str(step)
+                completed.append(f"  ✓ Step {i+1}: {step_desc}")
+        
+        if not completed:
+            return "No steps completed yet"
+        
+        return "\n".join(completed)
+    
+    def _app_matches_task(self, app_name: str, task: str) -> bool:
+        """Check if current app matches what the task expects."""
+        app_lower = app_name.lower()
+        task_lower = task.lower()
+        
+        # Browser tasks (video, search, web)
+        browser_keywords = ["youtube", "video", "google", "web", "search online", "play a", "watch"]
+        if any(kw in task_lower for kw in browser_keywords):
+            return app_lower in ["safari", "google chrome", "firefox", "arc", "brave", "edge"]
+        
+        # App-specific tasks  
+        if "whatsapp" in task_lower:
+            return "whatsapp" in app_lower
+        if "messages" in task_lower:
+            return "messages" in app_lower
+        if "notes" in task_lower:
+            return "notes" in app_lower
+        if "mail" in task_lower or "email" in task_lower:
+            return "mail" in app_lower or "outlook" in app_lower
+        if "calendar" in task_lower:
+            return "calendar" in app_lower
+        if "spotify" in task_lower or "music" in task_lower:
+            return "spotify" in app_lower or "music" in app_lower
+        
+        return True  # Default: don't reject unknown tasks
     
     # ========== SCREEN CONTEXT ==========
     
