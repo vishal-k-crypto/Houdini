@@ -25,6 +25,7 @@ except ImportError:
 class GeminiCLI:
     """
     Wrapper for the Gemini CLI tool (text-only) and Python API (for vision).
+    Uses Gemini 3.0 Pro (gemini-2.5-pro) for high-quality strategic planning.
     """
     def __init__(self, model_name: str = "gemini-2.5-pro"):
         self.model_name = model_name
