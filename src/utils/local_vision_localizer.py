@@ -944,6 +944,7 @@ class LocalVisionLocalizer:
 
 # Convenience function for quick access
 _default_localizer: Optional[LocalVisionLocalizer] = None
+_adaptive_localizer = None  # Lazy import to avoid circular dependency
 
 
 def get_local_localizer() -> LocalVisionLocalizer:
@@ -954,17 +955,89 @@ def get_local_localizer() -> LocalVisionLocalizer:
     return _default_localizer
 
 
+def get_adaptive_localizer():
+    """
+    Get the adaptive vision localizer with feedback loop.
+    This is the RECOMMENDED default mode for best accuracy over time.
+    """
+    global _adaptive_localizer
+    if _adaptive_localizer is None:
+        try:
+            from .vision_feedback_loop import AdaptiveVisionLocalizer
+            _adaptive_localizer = AdaptiveVisionLocalizer()
+            logger.info("🎯 Using Adaptive Vision Localizer with feedback learning")
+        except ImportError as e:
+            logger.warning(f"Adaptive localizer not available, using base: {e}")
+            _adaptive_localizer = get_local_localizer()
+    return _adaptive_localizer
+
+
 def find_element_locally(
     element_description: str,
     image_path: Optional[str] = None,
+    use_adaptive: bool = True,
+    app_name: str = "",
+    task_context: str = "",
     **kwargs
 ) -> LocalizationResult:
     """
-    Convenience function to find an element using hybrid local vision.
+    Find an element using local vision with optional adaptive learning.
+    
+    This is the DEFAULT method for finding UI elements. By default,
+    uses the adaptive feedback loop which learns from successes/failures.
+    
+    Args:
+        element_description: What to find (e.g., "search button", "close icon")
+        image_path: Optional screenshot path (auto-captures if None)
+        use_adaptive: Use adaptive mode with learning (default: True)
+        app_name: Current app name (helps learning)
+        task_context: Context about the task (helps prompting)
+        **kwargs: Additional args for localizer
     
     Example:
         result = find_element_locally("the search button")
         if result.found:
-            print(f"Found at ({result.x}, {result.y})")
+            pyautogui.click(result.x, result.y)
+            record_click_success(result.element_description, success=True)
     """
+    if use_adaptive:
+        localizer = get_adaptive_localizer()
+        # Adaptive localizer has different signature
+        if hasattr(localizer, 'find_element'):
+            try:
+                return localizer.find_element(
+                    element_description=element_description,
+                    app_name=app_name,
+                    task_context=task_context,
+                    image_path=image_path
+                )
+            except Exception as e:
+                logger.warning(f"Adaptive find failed, falling back: {e}")
+    
     return get_local_localizer().find_element(element_description, image_path, **kwargs)
+
+
+def record_click_success(element_description: str, success: bool):
+    """
+    Record whether a click on an element succeeded.
+    This feedback is used to improve future localization.
+    
+    Args:
+        element_description: The element that was clicked
+        success: Whether the click achieved the intended result
+    
+    Example:
+        result = find_element_locally("submit button")
+        if result.found:
+            pyautogui.click(result.x, result.y)
+            # Verify the click worked (e.g., check for expected change)
+            worked = check_submission_success()
+            record_click_success("submit button", success=worked)
+    """
+    try:
+        localizer = get_adaptive_localizer()
+        if hasattr(localizer, 'record_click_result'):
+            localizer.record_click_result(element_description, success)
+            logger.debug(f"📝 Recorded click feedback: {element_description} = {'✅' if success else '❌'}")
+    except Exception as e:
+        logger.debug(f"Could not record feedback: {e}")

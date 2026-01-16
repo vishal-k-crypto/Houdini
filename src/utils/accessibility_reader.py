@@ -171,9 +171,98 @@ class UIElement:
         return f"{self.role}: '{self.title or self.value}' at ({self.x}, {self.y})"
 
 
-def get_frontmost_app() -> Dict[str, str]:
-    """Get info about the frontmost application."""
+# Apps to skip when detecting frontmost app (IDEs, terminals running the agent)
+AGENT_SKIP_APPS = [
+    "electron",       # VS Code, other Electron apps
+    "code",           # VS Code 
+    "code - insiders", # VS Code Insiders
+    "cursor",         # Cursor IDE
+    "terminal",       # Terminal running the agent
+    "iterm",          # iTerm2 running the agent
+    "iterm2",
+    "warp",           # Warp terminal
+    "alacritty",      # Alacritty terminal
+    "kitty",          # Kitty terminal
+    "hyper",          # Hyper terminal
+]
+
+
+def get_frontmost_app(skip_agent_apps: bool = True) -> Dict[str, str]:
+    """
+    Get info about the frontmost application.
+    
+    Args:
+        skip_agent_apps: If True, skip known IDE/editor/terminal apps that might
+                        be running the agent itself, and return the next app.
+    """
+    # Script to get all visible application windows in order
     script = '''
+    tell application "System Events"
+        set output to ""
+        set allProcs to every application process whose visible is true
+        repeat with proc in allProcs
+            set appName to name of proc
+            set isFront to frontmost of proc
+            try
+                set windowTitle to name of window 1 of proc
+            on error
+                set windowTitle to ""
+            end try
+            set output to output & appName & "|" & windowTitle & "|" & isFront & "\\n"
+        end repeat
+        return output
+    end tell
+    '''
+    
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=3
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().split("\n")
+            frontmost_app = None
+            other_apps = []
+            
+            for line in lines:
+                if not line.strip():
+                    continue
+                parts = line.split("|")
+                if len(parts) >= 3:
+                    app_name = parts[0].strip()
+                    window_title = parts[1].strip()
+                    is_front = parts[2].strip().lower() == "true"
+                    
+                    app_info = {"app": app_name, "window": window_title}
+                    
+                    if is_front:
+                        frontmost_app = app_info
+                    else:
+                        other_apps.append(app_info)
+            
+            # If skip_agent_apps is enabled and frontmost is an agent-related app,
+            # try to return the next visible app instead
+            if skip_agent_apps and frontmost_app:
+                app_lower = frontmost_app["app"].lower()
+                if any(skip_app in app_lower for skip_app in AGENT_SKIP_APPS):
+                    logger.debug(f"Skipping agent app '{frontmost_app['app']}', looking for next app")
+                    # Return the first non-agent app from other visible apps
+                    for other_app in other_apps:
+                        other_lower = other_app["app"].lower()
+                        if not any(skip_app in other_lower for skip_app in AGENT_SKIP_APPS):
+                            logger.debug(f"Found target app: {other_app['app']}")
+                            return other_app
+                    # All apps are agent apps - return frontmost anyway
+                    logger.debug("No target app found, returning frontmost")
+                    return frontmost_app
+            
+            if frontmost_app:
+                return frontmost_app
+    except Exception as e:
+        logger.debug(f"get_frontmost_app advanced script failed: {e}")
+    
+    # Fallback to simple script
+    simple_script = '''
     tell application "System Events"
         set frontApp to first application process whose frontmost is true
         set appName to name of frontApp
@@ -187,7 +276,7 @@ def get_frontmost_app() -> Dict[str, str]:
     '''
     try:
         result = subprocess.run(
-            ["osascript", "-e", script],
+            ["osascript", "-e", simple_script],
             capture_output=True, text=True, timeout=3
         )
         if result.returncode == 0:

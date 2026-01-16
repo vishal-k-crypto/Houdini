@@ -527,7 +527,8 @@ Generate micro actions:"""
                         logger.info(f"📊 Action confidence: {rating.score:.1f}/10 ({rating.level.value})")
                         
                         # Defer to supervisor if confidence too low
-                        if rating.score < 3.0:
+                        # Lower threshold (2.0 instead of 3.0) - only defer truly uncertain actions
+                        if rating.score < 2.0:
                             logger.warning(f"⚠️ Low confidence ({rating.score:.1f}), deferring to supervisor")
                             return {
                                 "iteration": iteration,

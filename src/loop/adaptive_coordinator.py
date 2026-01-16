@@ -185,6 +185,11 @@ class AdaptiveState:
     execution_params: Optional[Dict] = None  # Dynamic params from probability model
     uncertainty_score: float = 0.0  # Overall uncertainty
     
+    # Stuck detection state
+    step_attempt_count: int = 0  # How many times current step has been attempted
+    last_attempted_step_idx: int = -1  # Last step index that was attempted
+    max_step_attempts: int = 5  # Max attempts before forcing advancement
+    
     # Timestamps
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -321,7 +326,37 @@ class AdaptiveLoopCoordinator:
                 
                 # Get current macro step
                 current_macro = macro_plan.macro_steps[self.state.current_macro_step_idx]
-                logger.info(f"\n▶️ Macro Step {self.state.current_macro_step_idx + 1}: {current_macro.get('step', 'Unknown')}")
+                step_desc = current_macro.get('step', 'Unknown')
+                logger.info(f"\n▶️ Macro Step {self.state.current_macro_step_idx + 1}: {step_desc}")
+                
+                # ========== STUCK DETECTION ==========
+                # Track step attempts to detect loops
+                if self.state.current_macro_step_idx == self.state.last_attempted_step_idx:
+                    self.state.step_attempt_count += 1
+                else:
+                    self.state.step_attempt_count = 1
+                    self.state.last_attempted_step_idx = self.state.current_macro_step_idx
+                
+                # Check if stuck on same step too many times
+                if self.state.step_attempt_count > self.state.max_step_attempts:
+                    logger.warning(f"⚠️ Stuck on step {self.state.current_macro_step_idx + 1} after {self.state.step_attempt_count} attempts")
+                    self._show("supervisor", f"⚠️ Step stuck after {self.state.step_attempt_count} attempts - checking if already done", "warning")
+                    
+                    # Check if step might already be complete
+                    if self._verify_step_completion(current_macro):
+                        logger.info(f"✅ Step was actually complete - advancing")
+                        self._show("executor", f"✅ Step {self.state.current_macro_step_idx + 1} verified complete", "success")
+                        self.state.current_macro_step_idx += 1
+                        self.state.step_attempt_count = 0
+                        continue
+                    else:
+                        # Force skip if truly stuck
+                        logger.warning(f"⏭️ Forcing skip of stuck step")
+                        self._show("supervisor", f"⏭️ Skipping stuck step to continue task", "warning")
+                        self.state.supervisor_notes.append(f"Skipped stuck step: {step_desc}")
+                        self.state.current_macro_step_idx += 1
+                        self.state.step_attempt_count = 0
+                        continue
                 
                 # EXECUTOR: Generate and execute micro actions
                 self._set_phase(AdaptivePhase.EXECUTING)
@@ -340,14 +375,25 @@ class AdaptiveLoopCoordinator:
                         break
                     elif guidance.get("skip"):
                         self.state.current_macro_step_idx += 1
+                        self.state.step_attempt_count = 0
                         continue
                     elif guidance.get("new_actions"):
                         # Execute supervisor-provided actions
-                        self._execute_micro_actions(guidance["new_actions"])
+                        exec_success = self._execute_micro_actions(guidance["new_actions"])
+                        
+                        # After executing supervisor actions, check if step is now complete
+                        if exec_success:
+                            time.sleep(0.5)  # Wait for UI to settle
+                            if self._verify_step_completion(current_macro):
+                                self._show("executor", f"✅ Step {self.state.current_macro_step_idx + 1} complete (after guidance)", "success")
+                                self.state.current_macro_step_idx += 1
+                                self.state.step_attempt_count = 0
+                                continue
                     
                 if step_result.get("complete"):
                     self._show("executor", f"✅ Step {self.state.current_macro_step_idx + 1} complete", "success")
                     self.state.current_macro_step_idx += 1
+                    self.state.step_attempt_count = 0
                 
                 # Event-driven wait between iterations instead of fixed sleep
                 self._smart_wait_after("iteration")
@@ -506,9 +552,9 @@ Use this analysis to:
 3. Add verification steps if uncertainty is high
 """
         
-        prompt = f"""You are a MACRO PLANNER. Generate high-level steps WITH specific action hints to guide execution.
+        prompt = f"""You are a MACRO PLANNER. Generate high-level steps that guide a HUMAN-LIKE execution.
 
-IMPORTANT: Include "suggested_actions" array for each step to prevent repeated LLM calls.
+CRITICAL: Think like a HUMAN using a computer, NOT a programmer using shortcuts!
 {flexibility_context}
 TASK: {task}
 
@@ -519,26 +565,53 @@ Output JSON:
             "step": "High-level description",
             "context": "What should be visible after",
             "potential_issues": "What could go wrong",
-            "suggested_actions": ["hotkey:command,space", "type:Safari", "key:return", "wait:1.5"]
+            "step_type": "blind" or "vision",
+            "suggested_actions": ["action1", "action2"]
         }}
     ],
     "expected_outcome": "What success looks like",
     "success_criteria": "How to verify completion"
 }}
 
-ACTION PATTERNS TO USE:
-- Open app via Spotlight: ["hotkey:command,space", "type:AppName", "key:return", "wait:1.5"]
-- Focus URL bar in browser: ["hotkey:command,l"]
-- Type and search: ["type:query text", "key:return"]
-- New tab: ["hotkey:command,t"]
-- Navigate to URL: ["hotkey:command,l", "type:url", "key:return", "wait:2"]
+## HUMAN-LIKE INTERACTION RULES
 
-EXAMPLES:
-- "Open Safari" -> {{step: "Launch Safari browser", suggested_actions: ["hotkey:command,space", "type:Safari", "key:return", "wait:1.5"]}}
-- "Search for AI news" -> {{step: "Search in browser", suggested_actions: ["hotkey:command,l", "type:AI news", "key:return", "wait:2"]}}
-- "Open YouTube" -> {{step: "Navigate to YouTube", suggested_actions: ["hotkey:command,l", "type:youtube.com", "key:return", "wait:2"]}}
+### Use VISION (step_type: "vision") for:
+- Finding and clicking UI elements on ANY website
+- Clicking search boxes, buttons, links, videos, menus
+- ANY interaction with website content
 
-Provide CONCRETE actions to avoid repeated LLM generation.
+### Use BLIND (step_type: "blind") ONLY for:
+- Opening apps via Spotlight: ["hotkey:command,space", "type:AppName", "key:return", "wait:1.5"]
+- Copy/Paste: ["hotkey:command,c"] or ["hotkey:command,v"]
+- New tab/Close tab: ["hotkey:command,t"] or ["hotkey:command,w"]
+- Initial URL bar focus: ["hotkey:command,l", "type:website.com", "key:return"]
+
+### NEVER DO:
+- Use URL query parameters (e.g., youtube.com/results?q=...) - SEARCH LIKE A HUMAN!
+- Use hotkeys for website search - websites have DIFFERENT shortcuts that often don't work
+- Skip the vision step when interacting with website content
+
+## EXAMPLES
+
+### "Open YouTube and search for Python tutorials":
+{{
+  "macro_steps": [
+    {{"step": "Launch Safari", "step_type": "blind", "suggested_actions": ["hotkey:command,space", "type:Safari", "key:return", "wait:2"]}},
+    {{"step": "Navigate to YouTube", "step_type": "blind", "suggested_actions": ["hotkey:command,l", "type:youtube.com", "key:return", "wait:3"]}},
+    {{"step": "Find and click the search box", "step_type": "vision", "suggested_actions": ["click:search box at top of YouTube page"]}},
+    {{"step": "Type search query and search", "step_type": "blind", "suggested_actions": ["type:Python tutorials", "key:return", "wait:2"]}},
+    {{"step": "Click the first video result", "step_type": "vision", "suggested_actions": ["click:first video thumbnail in results"]}}
+  ]
+}}
+
+### "Search for machine learning on Google":
+{{
+  "macro_steps": [
+    {{"step": "Open browser and go to Google", "step_type": "blind", "suggested_actions": ["hotkey:command,space", "type:Safari", "key:return", "wait:2", "hotkey:command,l", "type:google.com", "key:return", "wait:2"]}},
+    {{"step": "Click the Google search box", "step_type": "vision", "suggested_actions": ["click:search input field"]}},
+    {{"step": "Type search and submit", "step_type": "blind", "suggested_actions": ["type:machine learning", "key:return"]}}
+  ]
+}}
 
 Generate the macro plan:"""
         
@@ -598,19 +671,20 @@ Generate the macro plan:"""
         self._show("executor", f"━━━ Step: {step_desc} ━━━", "executing")
         
         # ========== FAST PATH: Semantic Check (no LLM) ==========
-        # Check for obvious mismatches before any expensive operations
-        semantic_result = self._fast_semantic_check(macro_step)
-        if semantic_result and semantic_result.should_interrupt:
-            logger.warning(f"⚡ Semantic mismatch detected (fast path): {semantic_result.reason}")
-            self._show("supervisor", f"⚡ Wrong app/window: {semantic_result.reason}", "warning")
-            return {
-                "complete": False,
-                "needs_supervisor": True,
-                "reason": semantic_result.reason,
-                "semantic_mismatch": True,
-                "expected_app": semantic_result.expected,
-                "actual_app": semantic_result.actual
-            }
+        # DISABLED: Sematic check blocks "Open App" commands because it checks preconditions
+        # We want to allow "blind" execution as per user request
+        # semantic_result = self._fast_semantic_check(macro_step)
+        # if semantic_result and semantic_result.should_interrupt:
+        #     logger.warning(f"⚡ Semantic mismatch detected (fast path): {semantic_result.reason}")
+        #     self._show("supervisor", f"⚡ Wrong app/window: {semantic_result.reason}", "warning")
+        #     return {
+        #         "complete": False,
+        #         "needs_supervisor": True,
+        #         "reason": semantic_result.reason,
+        #         "semantic_mismatch": True,
+        #         "expected_app": semantic_result.expected,
+        #         "actual_app": semantic_result.actual
+        #     }
         
         # ========== SLOW PATH: Full Screen Analysis ==========
         # Get current screen context
@@ -730,6 +804,14 @@ Generate the macro plan:"""
                                 params={"seconds": float(params_str)},
                                 description=f"Wait {params_str}s"
                             ))
+                        elif action_type == "click":
+                            # VISION-BASED CLICK: Use vision executor to find and click element
+                            micro_actions.append(MicroAction(
+                                action_type="click",
+                                params={"element": params_str},
+                                description=f"Click: {params_str}",
+                                requires_screen=True  # Vision actions require screen
+                            ))
                 elif isinstance(action_str, dict):
                     # Already in proper format
                     micro_actions.append(MicroAction(
@@ -751,48 +833,53 @@ Generate the macro plan:"""
         # Show current context
         self._show("executor", f"📍 Current app: {screen.app_name} | Window: {screen.window_title[:40]}", "info")
         
-        prompt = f"""You are a MICRO EXECUTOR. Generate specific cursor/keyboard actions.
+        # Check if this is a vision step (requires clicking UI elements)
+        step_type = macro_step.get("step_type", "blind")
+        is_vision_step = step_type == "vision" or "click" in step_desc.lower() or "find" in step_desc.lower()
+        
+        prompt = f"""You are a MICRO EXECUTOR. Generate actions to accomplish this step.
 
 MACRO STEP: {macro_step.get('step')}
+STEP TYPE: {step_type}
 CURRENT APP: {screen.app_name}
 WINDOW: {screen.window_title}
 VISIBLE ELEMENTS (sample): {elements_summary}
 
-Generate SPECIFIC actions using KEYBOARD SHORTCUTS (most reliable):
+## ACTION TYPES (in order of preference):
 
-PREFERRED ACTION TYPES:
-- hotkey: Press keyboard shortcut (MOST RELIABLE - use this for opening apps)
-  {{"type": "hotkey", "params": {{"keys": ["command", "space"]}}, "description": "Open Spotlight"}}
-- type: Type text
-  {{"type": "type", "params": {{"text": "Safari"}}, "description": "Type app name"}}
-- key: Press single key
-  {{"type": "key", "params": {{"key": "return"}}, "description": "Press Enter"}}
-- wait: Wait for UI
-  {{"type": "wait", "params": {{"seconds": 1.5}}, "description": "Wait for app to load"}}
+{"### VISION STEP - Use CLICK to find and interact with UI elements:" if is_vision_step else "### BLIND STEP - Use keyboard actions:"}
 
-AVOID THESE (unreliable):
-- activate_app (doesn't work - use Spotlight instead)
-- open_url (doesn't work - use Cmd+L and type URL instead)
+1. **click**: Find and click a UI element using VISION (HUMAN-LIKE - cursor moves to element)
+   {{"type": "click", "params": {{"element": "search box"}}, "description": "Click search box"}}
+   Use this for: buttons, links, search fields, videos, any clickable UI element
+   
+2. **type**: Type text into focused field
+   {{"type": "type", "params": {{"text": "query"}}, "description": "Type search query"}}
+   
+3. **key**: Press single key
+   {{"type": "key", "params": {{"key": "return"}}, "description": "Submit"}}
+   
+4. **hotkey**: Press keyboard shortcut (ONLY for system actions)
+   {{"type": "hotkey", "params": {{"keys": ["command", "space"]}}, "description": "Open Spotlight"}}
+   Use ONLY for: Spotlight (Cmd+Space), Copy (Cmd+C), Paste (Cmd+V), New Tab (Cmd+T), URL bar (Cmd+L)
+
+5. **wait**: Wait for UI to load
+   {{"type": "wait", "params": {{"seconds": 1.5}}, "description": "Wait for page"}}
 
 Output JSON:
 {{
-    "actions": [
-        {{"type": "hotkey", "params": {{"keys": ["command", "space"]}}, "description": "Open Spotlight"}},
-        {{"type": "type", "params": {{"text": "Safari"}}, "description": "Type Safari"}},
-        {{"type": "key", "params": {{"key": "return"}}, "description": "Launch app"}},
-        {{"type": "wait", "params": {{"seconds": 1.5}}, "description": "Wait for Safari"}}
-    ],
-    "requires_screen_check": false,
+    "actions": [...],
+    "requires_screen_check": true,
     "confidence": 0.9
 }}
 
-CRITICAL RULES:
-1. ALWAYS use Spotlight (Cmd+Space) to open apps - MOST RELIABLE method
-2. NEVER use activate_app or open_url - they don't work properly
-3. Use keyboard shortcuts for all navigation (Cmd+L for URL bar)
-4. Set requires_screen_check=true only if you must verify screen state
+## CRITICAL RULES:
+1. For VISION steps: Use "click" action to find UI elements - the system will use vision to locate them
+2. For website interactions: ALWAYS use click, NEVER use hotkeys for website search/buttons
+3. For opening apps: Use Spotlight (hotkey:command,space + type + key:return)
+4. Be SPECIFIC in element descriptions: "search box at top of page" not just "search"
 
-Generate micro actions:"""
+Generate actions:"""
 
         try:
             # Show that we're waiting for LLM
@@ -898,7 +985,8 @@ Generate micro actions:"""
                     logger.info(f"📊 Action confidence: {rating.score:.1f}/10 ({rating.level.value})")
                     
                     # Defer to supervisor if confidence too low
-                    if rating.score < 3.0:
+                    # Lower threshold (2.0 instead of 3.0) - only defer truly uncertain actions
+                    if rating.score < 2.0:
                         logger.warning(f"⚠️ Low confidence ({rating.score:.1f}), deferring to supervisor")
                         self._show("executor", f"⚠️ Low confidence ({rating.score:.1f}) - needs help", "warning")
                         # Store the rating for the failed action to learn from
@@ -1800,6 +1888,81 @@ Evolution plan:"""
                 return True
         
         return False
+    
+    def _verify_step_completion(self, macro_step: Dict) -> bool:
+        """
+        Verify if a macro step has been completed by checking the current screen state.
+        
+        This is crucial for detecting when navigation/launch steps are complete
+        even if confidence scoring failed.
+        
+        Returns True if step appears complete based on screen state.
+        """
+        step_desc = macro_step.get("step", "").lower()
+        context_hint = macro_step.get("context", "").lower()
+        
+        # Get fresh screen context
+        screen = self._capture_screen_context()
+        app_lower = screen.app_name.lower()
+        window_lower = screen.window_title.lower()
+        
+        # Extract keywords from step description for matching
+        step_keywords = self._extract_step_keywords(step_desc, context_hint)
+        
+        if not step_keywords:
+            # Can't determine expected state, assume not complete
+            return False
+        
+        # Check if any expected keyword is in current app or window
+        for keyword in step_keywords:
+            if keyword in app_lower or keyword in window_lower:
+                logger.info(f"✅ Step verified complete: found '{keyword}' in screen state")
+                return True
+        
+        # Special case: browser open but on different page
+        if any(browser in app_lower for browser in ["safari", "chrome", "firefox", "arc", "edge", "brave"]):
+            # Check if step was about opening a website
+            website_keywords = ["youtube", "google", "facebook", "twitter", "instagram", "reddit", "github"]
+            for site in website_keywords:
+                if site in step_desc or site in context_hint:
+                    if site in window_lower:
+                        logger.info(f"✅ Step verified: {site} is visible in browser")
+                        return True
+        
+        return False
+    
+    def _extract_step_keywords(self, step_desc: str, context_hint: str) -> List[str]:
+        """
+        Extract keywords from step description that indicate expected screen state.
+        
+        Examples:
+        - "Launch Safari browser" -> ["safari"]
+        - "Navigate to YouTube" -> ["youtube"]
+        - "Open WhatsApp" -> ["whatsapp"]
+        - "Search for MKBHD" -> ["mkbhd", "search"]
+        """
+        keywords = []
+        
+        # Common app names
+        apps = ["safari", "chrome", "firefox", "whatsapp", "messages", "finder",
+                "music", "spotify", "youtube", "google", "settings", "system preferences",
+                "terminal", "notes", "mail", "calendar", "photos", "preview"]
+        
+        # Check step description for app names
+        combined = (step_desc + " " + context_hint).lower()
+        for app in apps:
+            if app in combined:
+                keywords.append(app)
+        
+        # Extract domain names (e.g., "youtube.com" -> "youtube")
+        import re
+        domain_pattern = r'([a-zA-Z0-9-]+)\.(com|org|net|io|app)'
+        domains = re.findall(domain_pattern, combined)
+        for domain, tld in domains:
+            if domain not in keywords:
+                keywords.append(domain.lower())
+        
+        return keywords
     
     def _summarize_elements(self, elements: List[Dict]) -> str:
         """Create a summary of visible UI elements."""
