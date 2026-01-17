@@ -163,7 +163,9 @@ def run_batch_mode(args):
             result = execute_vision_action(client, action_desc, max_attempts=args.vision_steps)
             
             if result.get("success"):
-                logger.info(f"  ✅ Vision action completed")
+                method = result.get("method", "unknown")
+                duration = result.get("duration", 0)  # If available
+                logger.info(f"  ✅ Vision action completed using {method.upper()}")
             else:
                 logger.warning(f"  ⚠️ Vision action failed: {result.get('error', 'unknown')}")
 

@@ -780,6 +780,97 @@ class IntentPredictor:
 
 
 # ============================================================
+# ELEMENT AFFORDANCE SCORER (Practical World Awareness)
+# ============================================================
+
+@dataclass
+class ElementAffordanceScore:
+    """Score representing how well an element matches intent given its affordances."""
+    probability: float          # 0.0 - 1.0
+    is_target: bool             # Is it a likely target?
+    reason: str                 # Why it was scored this way
+    match_quality: str          # "high", "medium", "low", "negative"
+
+class ElementAffordanceScorer:
+    """
+    Scores UI elements based on their "Practical Affordance".
+    Distinguishes between "Text that matches" (e.g. Header) and 
+    "Things that do the job" (e.g. Buttons).
+    """
+    
+    def score_element(self, element: Any, intent: Dict, screen_height: int) -> ElementAffordanceScore:
+        """
+        Score a single element.
+        element: AccessibilityElement object
+        intent: Dict from vision_executor._parse_intent
+        """
+        score = 0.5  # Base score
+        reasons = []
+        
+        # 1. Role Affordance (Is it clickable?)
+        # ------------------------------------
+        interactive_roles = ['button', 'link', 'menuItem', 'checkBox', 'radioButton', 'switch']
+        static_roles = ['staticText', 'text', 'heading', 'group', 'image']
+        
+        if element.role in interactive_roles:
+            score += 0.2
+            reasons.append("interactive_role")
+        elif element.role in static_roles:
+            score -= 0.1
+            reasons.append("static_role")
+            
+        # 2. Position Heuristics (Is it a header/footer?)
+        # ---------------------------------------------
+        # Top 10% is usually header
+        is_top_header = element.y < (screen_height * 0.10)
+        # Bottom 10% is usually footer/status
+        is_bottom_footer = element.y > (screen_height * 0.90)
+        
+        if is_top_header:
+            score -= 0.3
+            reasons.append("top_header_penalty")
+        
+        # 3. Content Specificity (Is it generic?)
+        # -------------------------------------
+        text = (element.title or "") + " " + (element.value or "")
+        text = text.strip().lower()
+        
+        # Keywords check
+        intent_keywords = [k.lower() for k in intent.get("keywords", [])]
+        keyword_match = any(k in text for k in intent_keywords)
+        
+        if keyword_match:
+            score += 0.3
+            reasons.append("keyword_match")
+            
+            # Exact match generic penalty (e.g. just "1080p" vs "Download 1080p")
+            if len(text.split()) < 2 and element.role not in interactive_roles:
+                 score -= 0.2
+                 reasons.append("generic_text_penalty")
+        
+        # 4. Intent Alignment
+        # -----------------
+        target_type = intent.get("target_type", "unknown")
+        if target_type == "video" and (element.width > 200 or "duration" in text):
+             score += 0.2
+             reasons.append("video_like")
+        
+        # Clamp score
+        score = max(0.0, min(1.0, score))
+        
+        quality = "low"
+        if score > 0.8: quality = "high"
+        elif score > 0.5: quality = "medium"
+        
+        return ElementAffordanceScore(
+            probability=score,
+            is_target=score > 0.6,
+            reason=", ".join(reasons),
+            match_quality=quality
+        )
+
+
+# ============================================================
 # UNIFIED PROBABILITY MODEL
 # ============================================================
 
@@ -798,9 +889,10 @@ class TaskProbabilityModel:
         # Initialize components
         self.fuzzy_analyzer = FuzzyMacroMicroAnalyzer()
         self.bayesian_analyzer = BayesianTaskAnalyzer(
-            self.data_dir / "task_history.json"
+            history_path=self.data_dir / "task_history.json"
         )
         self.intent_predictor = IntentPredictor()
+        self.affordance_scorer = ElementAffordanceScorer()
         
         # Feedback learning
         self.feedback_path = self.data_dir / "probability_feedback.json"

@@ -19,8 +19,6 @@ from ..utils.accessibility_reader import (
     find_element_by_text,
     click_element
 )
-from ..utils.gemini_client import GeminiCLI
-from ..utils.coordinate_predictor import get_predictor
 
 # Try to import probability model
 try:
@@ -34,47 +32,24 @@ except ImportError:
     PROBABILITY_MODEL_AVAILABLE = False
     logger.warning("Probability model not available")
 
-# Try to import coordinate predictor
+# TinyClick - Samsung's Florence-2 fine-tuned model for fast click prediction
+# This is the PRIMARY vision strategy (~250ms inference, 73.8% accuracy)
 try:
-    PREDICTOR_AVAILABLE = True
-except ImportError:
-    PREDICTOR_AVAILABLE = False
-    logger.warning("Coordinate predictor not available")
-
-# Try to import Ollama VLM (Qwen3-VL Cloud)
-# This is the PRIMARY vision strategy for non-accessible apps
-try:
-    from ..utils.ollama_vlm import (
-        OllamaVLM,
-        get_vlm,
-        vlm_find_and_click,
-        vlm_find_with_probability
+    from ..utils.tinyclick_client import (
+        predict_click_with_result,
+        is_available as tinyclick_is_available,
+        TINYCLICK_AVAILABLE
     )
-    OLLAMA_VLM_AVAILABLE = True
-    logger.info("Ollama VLM available (Qwen3-VL Cloud)")
-except ImportError:
-    OLLAMA_VLM_AVAILABLE = False
-    logger.info("Ollama VLM not available")
-
-# Try to import OmniParser V2 (YOLO + Florence-2)
-# This is a high-accuracy fallback for non-accessible apps
-try:
-    from ..utils.omniparser_screen_parser import (
-        OmniParserScreenParser,
-        get_omniparser_screen_parser,
-        omniparser_find_element,
-        OMNIPARSER_AVAILABLE
-    )
-    if OMNIPARSER_AVAILABLE:
-        logger.info("OmniParser V2 available (YOLO + Florence-2)")
+    if TINYCLICK_AVAILABLE:
+        logger.info("✅ TinyClick available (Samsung Florence-2)")
     else:
-        logger.info("OmniParser dependencies not installed")
-except ImportError:
-    OMNIPARSER_AVAILABLE = False
-    logger.info("OmniParser not available - install ultralytics and torch")
+        logger.warning("❌ TinyClick venv not found - run: python3 -m venv .tinyclick-venv && .tinyclick-venv/bin/pip install transformers==4.48.0 torch pillow einops timm")
+except ImportError as e:
+    TINYCLICK_AVAILABLE = False
+    logger.warning(f"TinyClick import failed: {e}")
 
 
-def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts: int = 3,
+def execute_vision_action(cli, action_description: str, max_attempts: int = 3,
                           context: Optional[Dict] = None,
                           execution_params: Optional[Dict] = None) -> Dict:
     """
@@ -146,7 +121,7 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
             'exploration_enabled': False,
         }
     
-    # Strategy 1: Smart heuristic analysis via accessibility
+    # Strategy 1: Smart heuristic analysis via accessibility (with Awareness & Exploration)
     result = _analyze_and_execute(action_description)
     
     if result.get("success"):
@@ -154,7 +129,7 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
         result["match_probability"] = 1.0  # Accessibility matches are exact
         result["flexibility"] = flexibility_info
         return result
-    
+
     # Get dynamic match threshold from probability model
     min_match_prob = exec_params.get('min_match_probability', 0.5)
     
@@ -170,704 +145,274 @@ def execute_vision_action(cli: GeminiCLI, action_description: str, max_attempts:
     except:
         pass
     
-    # Strategy 2: Ollama VLM (Qwen3-VL Cloud)
-    # Vision-Language Model for precise UI element localization
-    if OLLAMA_VLM_AVAILABLE and result.get("reason") == "zero_elements":
-        logger.info(f"  🤖 Using Ollama VLM (Qwen3-VL Cloud, threshold: {min_match_prob:.0%})...")
-        vlm_result = _ollama_vlm_fallback(
+    # Strategy 2: TinyClick (Samsung Florence-2) - Fast pixel-precise clicking
+    # ~250ms inference, 73.8% accuracy on Screenspot benchmark
+    # Use TinyClick when accessibility can't find the element
+    if TINYCLICK_AVAILABLE and result.get("reason") in ["zero_elements", "no_match", "low_confidence"]:
+        logger.info(f"  ⚡ Using TinyClick (threshold: {min_match_prob:.0%})...")
+        tinyclick_result = _tinyclick_fallback(
             action_description, 
             min_match_prob,
             task_context=task_context
         )
         
-        if vlm_result.get("success"):
-            vlm_result["method"] = "ollama_vlm"
-            vlm_result["flexibility"] = flexibility_info
-            return vlm_result
+        if tinyclick_result.get("success"):
+            tinyclick_result["method"] = "tinyclick"
+            tinyclick_result["flexibility"] = flexibility_info
+            return tinyclick_result
+        else:
+            logger.warning(f"  TinyClick failed: {tinyclick_result.get('error')}")
     
-    # Strategy 2.5: OmniParser V2 (YOLO + Florence-2)
-    # High-accuracy detection for non-accessible apps, optimized for Apple Silicon
-    if OMNIPARSER_AVAILABLE and result.get("reason") == "zero_elements":
-        logger.info(f"  🔮 Using OmniParser V2 (threshold: {min_match_prob:.0%})...")
-        omni_result = _omniparser_fallback(action_description, min_match_prob)
-        
-        if omni_result.get("success"):
-            omni_result["method"] = "omniparser"
-            omni_result["flexibility"] = flexibility_info
-            return omni_result
-    
-    # Strategy 3: Fast coordinate prediction (universal - works for any app)
-    if PREDICTOR_AVAILABLE:
-        logger.info(f"  ⚡ Using fast coordinate prediction (threshold: {min_match_prob:.0%})...")
-        result = _fast_coordinate_fallback(action_description, min_match_prob)
-        
-        if result.get("success"):
-            result["method"] = "coordinate_prediction"
-            result["flexibility"] = flexibility_info
-            return result
-        elif result.get("match_probability", 0) > 0:
-            # Found something but with low probability
-            match_prob = result.get('match_probability', 0)
-            logger.warning(f"  Prediction found element with {match_prob:.0%} match probability")
-            
-            # If exploration is enabled and we have alternatives, try them
-            if exec_params.get('exploration_enabled') and match_prob > 0.3:
-                logger.info("  🔍 Exploration enabled - proceeding with low-confidence match")
-                result["method"] = "coordinate_prediction_exploratory"
-                result["flexibility"] = flexibility_info
-                return result
-    
-    # Strategy 4: LLM-guided fallback (last resort)
-    logger.warning("  Using LLM-guided fallback...")
-    result = _llm_fallback(cli, action_description, max_attempts)
-    result["method"] = "llm"
-    result["flexibility"] = flexibility_info
-    return result
+    # No more fallbacks - TinyClick is our only vision strategy
+    return {
+        "success": False, 
+        "error": "All strategies failed (accessibility + TinyClick)", 
+        "method": "none",
+        "flexibility": flexibility_info
+    }
 
 
-def _local_vision_fallback(action_description: str, min_match_probability: float = 0.5,
-                           app_name: str = "", task_context: str = "") -> Dict:
-    """
-    Use Local Vision Localizer (Apple Vision + UI-TARS MLX) to find and click UI elements.
-    
-    NOW WITH ADAPTIVE LEARNING:
-    - Uses learned patterns from past successes
-    - Records feedback for continuous improvement
-    - LangGraph-based feedback loop for retry logic
-    
-    Hybrid approach:
-    1. Apple Vision Framework - Fast geometric detection of UI rectangles (sub-millisecond)
-    2. UI-TARS via MLX-VLM - Semantic grounding for complex elements
-    3. Adaptive prompts - Learned hints from past interactions
-    
-    Hardware-accelerated on Apple Silicon Neural Engine.
-    
-    Args:
-        action_description: What element to find and click
-        min_match_probability: Minimum match score to consider success
-        app_name: Current app name (for learning)
-        task_context: Task context (for better prompting)
-        
-    Returns:
-        {
-            "success": True/False,
-            "coordinates": (x, y) or None,
-            "match_probability": float,
-            "element": detected element info,
-            "error": "..." or None
-        }
-    """
-    import pyautogui
-    
-    try:
-        # Use adaptive mode by default - learns from successes/failures
-        result = find_element_locally(
-            action_description,
-            use_adaptive=True,
-            app_name=app_name,
-            task_context=task_context,
-            min_confidence=min_match_probability
-        )
-        
-        if not result.found:
-            logger.warning(f"  LocalVision: No element matching '{action_description}'")
-            # Record failure for learning
-            try:
-                record_click_success(action_description, False)
-            except:
-                pass
-            return {
-                "success": False,
-                "match_probability": result.confidence,
-                "error": "No matching element found"
-            }
-        
-        # Check if match meets threshold
-        if result.confidence < min_match_probability:
-            logger.warning(f"  LocalVision: Match confidence {result.confidence:.0%} below threshold {min_match_probability:.0%}")
-            return {
-                "success": False,
-                "match_probability": result.confidence,
-                "element": result.element_description,
-                "coordinates": (result.x, result.y),
-                "error": f"Match confidence too low: {result.confidence:.0%}"
-            }
-        
-        # Execute click
-        x, y = result.x, result.y
-        logger.info(f"  LocalVision: Found '{result.element_description}' at ({x}, {y})")
-        logger.info(f"  Method: {result.method}, Confidence: {result.confidence:.0%}")
-        
-        # Move and click with natural motion - visible to user
-        current_x, current_y = pyautogui.position()
-        distance = ((x - current_x)**2 + (y - current_y)**2)**0.5
-        # Human-like movement: minimum 0.25s so user can see cursor moving
-        duration = min(0.8, max(0.25, distance / 800))
-        
-        # Use easeOutQuad for natural deceleration as cursor approaches target
-        pyautogui.moveTo(x, y, duration=duration, tween=pyautogui.easeOutQuad)
-        time.sleep(0.05)  # Brief pause before clicking (human hesitation)
-        pyautogui.click()
-        
-        logger.info(f"  ✅ LocalVision clicked at ({x}, {y})")
-        
-        # Record success for learning (we assume it worked if we got here)
-        # Actual verification should happen at a higher level
-        try:
-            record_click_success(action_description, True)
-        except:
-            pass
-        
-        return {
-            "success": True,
-            "coordinates": (x, y),
-            "match_probability": result.confidence,
-            "element": result.element_description,
-        }
-        
-    except Exception as e:
-        logger.error(f"  LocalVision error: {e}")
-        return {"success": False, "error": str(e)}
-
-
-def _ollama_vlm_fallback(
+def _tinyclick_fallback(
     action_description: str,
-    min_match_probability: float = 0.5,
+    min_match_probability: float = 0.3,
     task_context: str = ""
 ) -> Dict:
     """
-    Use Ollama VLM (Qwen3-VL Cloud) to find and click UI elements.
+    Use TinyClick (Samsung's Florence-2 fine-tuned model) for fast click prediction.
     
-    Vision-Language Model approach:
-    - Takes screenshot of current screen
-    - Sends to Qwen3-VL cloud model via Ollama
-    - Gets precise coordinates with confidence scores
-    - Includes match probability for partial matches
+    TinyClick Features:
+    - ~250ms inference (160x faster than VLM cloud calls)
+    - 0.27B parameters (lightweight, runs locally)
+    - 73.8% accuracy on Screenspot benchmark
+    - Pixel-precise coordinate prediction
     
     Args:
-        action_description: What element to find and click
-        min_match_probability: Minimum match score (0.0-1.0)
-        task_context: Additional context for better understanding
-        
+        action_description: What element to click, e.g., "first video thumbnail"
+        min_match_probability: Minimum confidence threshold
+        task_context: Additional context about the task
+    
     Returns:
         {
-            "success": True/False,
-            "coordinates": (x, y) or None,
+            "success": bool,
+            "coordinates": (x, y),
             "match_probability": float,
-            "confidence": float,
-            "element": detected element text,
-            "error": "..." or None
+            "element": str,
+            "error": str or None
         }
     """
     import pyautogui
     
     try:
-        result = vlm_find_and_click(
-            element_description=action_description,
-            task_context=task_context,
-            min_match_probability=min_match_probability
+        # Get prediction from TinyClick
+        result = predict_click_with_result(
+            action_description,
+            screenshot_path=None,  # Will capture automatically
+            task_context=task_context
         )
         
         if not result.get("success"):
-            error_msg = result.get("error", "Element not found")
-            logger.warning(f"  Ollama VLM: {error_msg}")
+            error_msg = result.get("error", "Prediction failed")
+            logger.warning(f"  TinyClick: {error_msg}")
             return {
                 "success": False,
-                "match_probability": result.get("match_probability", 0.0),
-                "confidence": result.get("confidence", 0.0),
+                "match_probability": 0.0,
                 "error": error_msg
             }
         
-        # Get coordinates and match info
-        coords = result.get("coordinates")
-        match_prob = result.get("match_probability", 0.0)
-        confidence = result.get("confidence", 0.0)
-        element_text = result.get("element", "unknown")
+        x, y = result["x"], result["y"]
+        confidence = result.get("confidence", 0.85)
+        inference_ms = result.get("inference_ms", 0)
         
-        if not coords:
+        logger.info(f"  TinyClick: Found element at ({x}, {y}) in {inference_ms:.0f}ms")
+        logger.info(f"  Confidence: {confidence:.0%}")
+        
+        # Check confidence threshold
+        if confidence < min_match_probability:
+            logger.warning(f"  TinyClick confidence {confidence:.0%} below threshold {min_match_probability:.0%}")
             return {
                 "success": False,
-                "error": "No coordinates returned",
-                "match_probability": match_prob
+                "match_probability": confidence,
+                "error": f"Confidence {confidence:.0%} below threshold"
             }
+            
+        # SAFETY CHECK: Protect against accidental address bar clicks (y < 110)
+        # unless user explicitly asks for "address", "url", "browser", etc.
+        action_lower = action_description.lower()
+        explicit_nav_intent = any(w in action_lower for w in ['address', 'url', 'link', 'bar', 'omnibox', 'browser', 'navigation'])
         
-        x, y = coords
-        logger.info(f"  Ollama VLM: Found '{element_text}' at ({x}, {y})")
-        logger.info(f"  Confidence: {confidence:.0%}, Match: {match_prob:.0%}")
-        
-        # The vlm_find_and_click function already performed the click
-        # Just return the success result
-        
-        return {
-            "success": True,
-            "coordinates": (x, y),
-            "match_probability": match_prob,
-            "confidence": confidence,
-            "element": element_text
-        }
-        
-    except Exception as e:
-        logger.error(f"  Ollama VLM error: {e}")
-        return {"success": False, "error": str(e)}
-
-
-def _omniparser_fallback(action_description: str, min_match_probability: float = 0.5) -> Dict:
-    """
-    Use OmniParser V2 (YOLO + Florence-2) to find and click UI elements.
-    
-    Features:
-    - YOLOv8-based icon detection (fast, precise bounding boxes)
-    - Florence-2 captioning (semantic understanding)
-    - Retina scaling handled automatically (÷2.0 on Mac)
-    - MPS acceleration on Apple Silicon
-    
-    Args:
-        action_description: What element to find and click
-        min_match_probability: Minimum confidence threshold
-        
-    Returns:
-        {
-            "success": True/False,
-            "coordinates": (x, y) or None,
-            "match_probability": float,
-            "element": detected element info,
-            "error": "..." or None
-        }
-    """
-    import pyautogui
-    
-    try:
-        parser = get_omniparser_screen_parser()
-        result = omniparser_find_element(action_description)
-        
-        if not result.found:
-            logger.warning(f"  OmniParser: No element matching '{action_description}'")
+        if y < 110 and not explicit_nav_intent:
+            logger.warning(f"  ⚠️ TinyClick result ({x}, {y}) is in browser chrome (likely address bar), but no explicit intent found.")
             return {
                 "success": False,
-                "match_probability": result.confidence,
-                "error": "No matching element found"
+                "match_probability": confidence,
+                "is_address_bar_rejection": True,
+                "error": "Safety check: Click target in browser chrome (address bar) rejected for non-navigation intent"
             }
         
-        # Check if match meets threshold
-        if result.confidence < min_match_probability:
-            logger.warning(
-                f"  OmniParser: Match confidence {result.confidence:.0%} "
-                f"below threshold {min_match_probability:.0%}"
-            )
-            return {
-                "success": False,
-                "match_probability": result.confidence,
-                "element": result.label,
-                "coordinates": (result.x, result.y),
-                "error": f"Match confidence too low: {result.confidence:.0%}"
-            }
+        # Perform the click using human-like cursor movement
+        try:
+            from ..utils.cursor_controller import HumanCursor
+            cursor = HumanCursor()
+            cursor.move_to(x, y)
+        except ImportError:
+            # Fallback to pyautogui
+            pyautogui.moveTo(x, y, duration=0.15)
         
-        # Execute click (coordinates already Retina-scaled)
-        x, y = result.x, result.y
-        logger.info(f"  OmniParser: Found '{result.label}' at ({x}, {y})")
-        logger.info(f"  Caption: {result.caption[:50] if result.caption else 'N/A'}")
-        logger.info(f"  Confidence: {result.confidence:.0%}")
-        
-        # Move and click with natural motion - visible to user
-        current_x, current_y = pyautogui.position()
-        distance = ((x - current_x)**2 + (y - current_y)**2)**0.5
-        # Human-like movement: minimum 0.25s so user can see cursor moving
-        duration = min(0.8, max(0.25, distance / 800))
-        
-        # Use easeOutQuad for natural deceleration as cursor approaches target
-        pyautogui.moveTo(x, y, duration=duration, tween=pyautogui.easeOutQuad)
-        time.sleep(0.05)  # Brief pause before clicking (human hesitation)
+        time.sleep(0.05)  # Brief pause before clicking
         pyautogui.click()
         
-        logger.info(f"  ✅ OmniParser clicked at ({x}, {y})")
+        logger.info(f"  ✅ TinyClick clicked at ({x}, {y})")
         
         return {
             "success": True,
             "coordinates": (x, y),
-            "match_probability": result.confidence,
-            "element": result.label,
-            "caption": result.caption,
+            "match_probability": confidence,
+            "element": action_description,
+            "inference_ms": inference_ms
         }
         
     except Exception as e:
-        logger.error(f"  OmniParser error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"  TinyClick error: {e}")
         return {"success": False, "error": str(e)}
-
-def _fast_coordinate_fallback(action_description: str, min_match_probability: float = 0.5) -> Dict:
-    """
-    Use fast coordinate prediction to find and click elements.
-    Uses Qwen3-Coder to reason about UI layouts and predict precise coordinates.
-    MUCH faster than vision models (2-3 seconds vs 30+ seconds).
-    
-    This is a UNIVERSAL method that works for any application.
-    Returns match probability so caller can decide whether to proceed.
-    
-    Args:
-        action_description: What element to find and click
-        min_match_probability: Minimum match probability to consider success (0.0-1.0)
-    
-    Returns:
-        {
-            "success": True/False,
-            "coordinates": (x, y) or None,
-            "match_probability": float (0.0-1.0),
-            "confidence": float (0.0-1.0),
-            "element": "text of element found",
-            "error": "..." or None
-        }
-    """
-    from ..utils.accessibility_reader import get_frontmost_app
-    
-    # Get app context for better prediction
-    app_info = get_frontmost_app()
-    app_name = app_info.get("app", "Unknown")
-    window_title = app_info.get("window", "")
-    
-    task_context = f"Looking for: {action_description}"
-    
-    logger.info(f"  ⚡ Predicting coordinates for {app_name}...")
-    
-    # Use fast predictor to find and click with probability threshold
-    predictor = get_predictor()
-    result = predictor.click_element(
-        action_description,
-        app_name,
-        window_title,
-        task_context,
-        min_match_probability
-    )
-    
-    # Log the match details
-    if result.get("success") or result.get("coordinates"):
-        match_prob = result.get("match_probability", 0)
-        element = result.get("element", "unknown")
-        logger.info(f"  📊 Match probability: {match_prob:.0%} for '{element}'")
-    
-    return result
-
-
-# Legacy VLM fallback - replaced by fast coordinate predictor
-def _vlm_screenshot_fallback(action_description: str, min_match_probability: float = 0.5) -> Dict:
-    """
-    Use VLM screenshot analysis to find and click elements.
-    Takes a screenshot, sends to Qwen3-VL, gets precise coordinates.
-    
-    This is a UNIVERSAL method that works for any application.
-    Returns match probability so caller can decide whether to proceed.
-    
-    Args:
-        action_description: What element to find and click
-        min_match_probability: Minimum match probability to consider success (0.0-1.0)
-    
-    Returns:
-        {
-            "success": True/False,
-            "coordinates": (x, y) or None,
-            "match_probability": float (0.0-1.0),
-            "confidence": float (0.0-1.0),
-            "element": "text of element found",
-            "error": "..." or None
-        }
-    """
-    from ..utils.accessibility_reader import get_frontmost_app
-    
-    try:
-        from ..utils.ollama_vlm import vlm_find_and_click
-    except ImportError:
-        logger.error("  VLM not available - this is a legacy fallback")
-        return {"success": False, "error": "VLM not available"}
-    
-    # Get app context for better VLM targeting
-    app_info = get_frontmost_app()
-    app_name = app_info.get("app", "Unknown")
-    window_title = app_info.get("window", "")
-    
-    task_context = f"App: {app_name}, Window: {window_title}"
-    
-    logger.info(f"  VLM context: {task_context}")
-    
-    # Use VLM to find and click with probability threshold
-    result = vlm_find_and_click(action_description, task_context, min_match_probability)
-    
-    # Log the match details
-    if result.get("found") or result.get("coordinates"):
-        match_prob = result.get("match_probability", 0)
-        element = result.get("element", "unknown")
-        logger.info(f"  📊 Match probability: {match_prob:.0%} for '{element}'")
-    
-    return result
-
-
-# _position_based_click removed - VLM is now the universal fallback
 
 
 def _analyze_and_execute(action_description: str) -> Dict:
     """
-    Executor analyzes UI tree and determines click target autonomously.
-    This is the primary execution path - no LLM needed.
+    Executor analyzes UI tree and determines click target.
+    Uses direct text matching for reliability.
     """
     import pyautogui
-    from ..utils.accessibility_reader import get_frontmost_app, get_ui_tree, get_ui_elements_applescript
+    from ..utils.accessibility_reader import get_frontmost_app, get_ui_elements_applescript
     
     desc_lower = action_description.lower()
     
-    # Get screen context
-    app_info = get_frontmost_app()
-    app_name = app_info.get("app", "").lower()
+    # Extract search keywords from the action description
+    keywords = []
+    # Look for quoted text first
+    import re
+    quoted = re.findall(r'["\']([^"\']+)["\']', action_description)
+    if quoted:
+        keywords.extend([q.lower() for q in quoted])
+    
+    # Extract meaningful words from description
+    skip_words = {'click', 'on', 'the', 'a', 'an', 'button', 'link', 'element', 
+                  'first', 'second', 'last', 'result', 'results', 'matching', 
+                  'title', 'text', 'box', 'field', 'input', 'search', 'homepage',
+                  'site', 'website', 'page'}
+    words = [w.strip('.,!?') for w in desc_lower.split() 
+             if w.strip('.,!?') and w.strip('.,!?') not in skip_words and len(w) > 2]
+    keywords.extend(words)
+    
+    logger.info(f"  🔍 Looking for keywords: {keywords}")
+    
     screen_width, screen_height = pyautogui.size()
     
-    logger.info(f"  Context: {app_info.get('app')} - {app_info.get('window', '')[:50]}")
+    # Get UI elements
+    elements = get_ui_elements_applescript(max_elements=150)
     
-    # Executor determines intent from action description
-    intent = _parse_intent(desc_lower)
-    logger.info(f"  Intent: {intent}")
+    if not elements:
+        logger.warning("  ⚠️ Accessibility returned 0 elements")
+        return {"success": False, "reason": "zero_elements"}
     
-    # Get and analyze UI elements
-    elements = get_ui_elements_applescript(max_elements=100)
-    logger.info(f"  Analyzing {len(elements)} UI elements")
+    # Score elements by keyword match and interactivity
+    candidates = []
+    for elem in elements:
+        # Skip system bar (top 25px)
+        if elem.y < 25:
+            continue
+            
+        title = (elem.title or '').lower()
+        value = (elem.value or '').lower()
+        role = elem.role.lower() if elem.role else ''
+        text = f"{title} {value}"
+        
+        score = 0.0
+        matched_keywords = []
+        
+        # Keyword matching
+        for kw in keywords:
+            if kw in text:
+                score += 0.4
+                matched_keywords.append(kw)
+        
+        # Role bonus for interactive elements
+        interactive_roles = ['button', 'link', 'menuitem', 'checkbox', 'radiobutton', 
+                            'textfield', 'searchfield', 'combobox']
+        if any(r in role for r in interactive_roles):
+            score += 0.3
+        
+        # Penalty for headers/footers 
+        if elem.y < screen_height * 0.08:  # Top 8%
+            score -= 0.2
+        
+        if score > 0:
+            candidates.append((score, elem, matched_keywords))
     
-    # If zero elements, signal to use fast coordinate prediction
-    if len(elements) == 0:
-        logger.warning("  ⚠️ Accessibility returned 0 elements - using fast prediction")
-        return {"success": False, "reason": "zero_elements", "use_predictor": True}
-    
-    # Filter elements based on intent and context
-    candidates = _filter_relevant_elements(elements, intent, app_name, screen_width, screen_height)
+    # Sort by score
+    candidates.sort(key=lambda x: -x[0])
     
     if not candidates:
-        logger.warning("  No suitable elements found by executor")
-        return {"success": False, "reason": "no_candidates"}
+        logger.info("  No matching candidates found")
+        return {"success": False, "reason": "no_match"}
     
-    # Executor selects best target
-    target = candidates[0]  # Already sorted by relevance
-    logger.info(f"  Executor selected: {target.role} '{target.title or target.value}' at {target.center}")
+    # Check for explicit address bar intent
+    explicit_nav_intent = any(w in desc_lower for w in ['address', 'url', 'link', 'bar', 'omnibox', 'browser', 'navigation'])
     
-    # Execute click
-    current_x, current_y = pyautogui.position()
-    target_x, target_y = target.center
-    distance = ((target_x - current_x)**2 + (target_y - current_y)**2)**0.5
+    # Refine scores with address bar detection
+    refined_candidates = []
+    for score, elem, matched in candidates:
+        # Heuristic for browser address bar/omnibox
+        # 1. Top region of screen (usually top 110px)
+        # 2. Text field or search field role
+        # 3. Value looks like a URL
+        is_top_region = elem.y < 110
+        is_input_role = elem.role in ['textField', 'searchField', 'comboBox']
+        val = (elem.value or '').strip()
+        is_url_value = val.startswith('http') or val.startswith('www') or '://' in val or '.com' in val or '.org' in val or '.net' in val or '.io' in val
+        
+        is_likely_address_bar = is_top_region and is_input_role and is_url_value
+        
+        if is_likely_address_bar and not explicit_nav_intent:
+            logger.info(f"  📉 Applying address bar penalty to '{elem.title or elem.value}' (is_likely_address_bar=True)")
+            score -= 0.5
+        
+        if score > 0:
+            refined_candidates.append((score, elem, matched))
+            
+    # Re-sort after penalties
+    candidates = sorted(refined_candidates, key=lambda x: -x[0])
     
-    logger.info(f"  Moving cursor: ({current_x}, {current_y}) → ({target_x}, {target_y}) [distance: {distance:.0f}px]")
-    pyautogui.moveTo(target_x, target_y, duration=0.3)
+    if not candidates:
+        logger.info("  No matching candidates after refinement")
+        return {"success": False, "reason": "no_match_after_refinement"}
     
+    # Log top candidates
+    for i, (score, elem, matched) in enumerate(candidates[:3]):
+        logger.info(f"  #{i+1} Score: {score:.2f} | '{elem.title or elem.value}' | {elem.role} | matched: {matched}")
+    
+    # Click best candidate if score is reasonable
+    best_score, best_elem, best_matched = candidates[0]
+    
+    if best_score >= 0.3:  # Lower threshold for reliability
+        return _perform_click(best_elem)
+    else:
+        logger.info(f"  Best score {best_score:.2f} too low, deferring to vision fallback")
+        return {"success": False, "reason": "low_confidence"}
+
+
+def _perform_click(target):
+    import pyautogui
     import time
+    
+    logger.info(f"  Executor selected: {target.role} '{target.title or target.value}' at {target.center}")
+    target_x, target_y = target.center
+    
+    pyautogui.moveTo(target_x, target_y, duration=0.3)
     time.sleep(0.05)
     pyautogui.click()
     
     logger.info(f"  ✅ Clicked: {target}")
     return {"success": True}
-
-
-def _parse_intent(action_desc: str) -> Dict:
-    """Parse action description to understand what user wants."""
-    intent = {
-        "action": "click",
-        "target_type": "unknown",
-        "position": "any",
-        "keywords": []
-    }
-    
-    # Determine position preference
-    if re.search(r'\b(first|latest|top|1st)\b', action_desc):
-        intent["position"] = "first"
-    elif re.search(r'\b(second|2nd)\b', action_desc):
-        intent["position"] = "second"
-    elif re.search(r'\b(last|bottom)\b', action_desc):
-        intent["position"] = "last"
-    
-    # Determine target type
-    if 'video' in action_desc or 'thumbnail' in action_desc:
-        intent["target_type"] = "video"
-    elif 'search result' in action_desc or 'result' in action_desc:
-        intent["target_type"] = "search_result"
-    elif 'button' in action_desc:
-        intent["target_type"] = "button"
-    elif 'link' in action_desc:
-        intent["target_type"] = "link"
-    elif 'title' in action_desc:
-        intent["target_type"] = "title"
-    
-    # Extract quoted text or specific keywords
-    quoted = re.findall(r'["\']([^"\']+)["\']', action_desc)
-    if quoted:
-        intent["keywords"] = quoted
-    
-    return intent
-
-
-def _filter_relevant_elements(elements: list, intent: Dict, app_name: str, screen_w: int, screen_h: int) -> list:
-    """
-    Executor's intelligent filtering - removes irrelevant elements.
-    Returns sorted list of candidates.
-    """
-    candidates = []
-    
-    # Define exclusion zones (areas to avoid)
-    # Left sidebar: x < 15% of screen
-    # Top header: y < 20% of screen  
-    # Right sidebar: x > 85% of screen
-    sidebar_left = screen_w * 0.15
-    header_top = screen_h * 0.20
-    sidebar_right = screen_w * 0.85
-    
-    for elem in elements:
-        # Skip if in exclusion zones
-        if elem.x < sidebar_left and elem.role in ['button', 'staticText']:
-            continue  # Likely navigation sidebar
-        if elem.y < header_top and 'logo' in (elem.title or '').lower():
-            continue  # Likely header/logo
-        if elem.x > sidebar_right:
-            continue  # Right sidebar
-        
-        # Skip elements that are clearly not targets
-        title_lower = (elem.title or '').lower()
-        value_lower = (elem.value or '').lower()
-        
-        # Exclude common non-target patterns
-        exclude_patterns = ['subscribe', 'logo', 'profile', 'avatar', 'menu', 'navigation', 'sidebar']
-        if any(pattern in title_lower or pattern in value_lower for pattern in exclude_patterns):
-            # Unless specifically searching for these
-            if not any(kw in title_lower or kw in value_lower for kw in intent.get("keywords", [])):
-                continue
-        
-        # Score element based on intent
-        score = 0
-        
-        # Target type matching with improved video detection
-        if intent["target_type"] == "video":
-            # Videos are usually large clickable areas in main content
-            if elem.role in ['link', 'button', 'group', 'image']:
-                # Typical video thumbnail size
-                if elem.width > 150 and elem.height > 80:
-                    score += 50
-                # Extra score for elements with video-related text
-                elem_text = (elem.title or '') + ' ' + (elem.value or '')
-                if any(kw in elem_text.lower() for kw in ['views', 'ago', 'watch', 'video']):
-                    score += 30
-        elif intent["target_type"] == "button":
-            if elem.role == 'button':
-                score += 40
-        elif intent["target_type"] == "link":
-            if elem.role in ['link', 'staticText']:
-                score += 40
-        
-        # Keyword matching
-        for keyword in intent.get("keywords", []):
-            if keyword.lower() in title_lower or keyword.lower() in value_lower:
-                score += 100
-        
-        # Position in main content area (center-right)
-        if sidebar_left < elem.x < sidebar_right and elem.y > header_top:
-            score += 20
-        
-        # Prefer elements with content
-        if elem.title or elem.value:
-            score += 10
-        
-        if score > 0:
-            candidates.append((score, elem))
-    
-    # Sort by score (highest first), then by position
-    candidates.sort(key=lambda x: (-x[0], x[1].y, x[1].x))
-    
-    # Apply position filter
-    if intent["position"] == "first":
-        candidates = candidates[:1]
-    elif intent["position"] == "second":
-        candidates = candidates[1:2] if len(candidates) > 1 else []
-    elif intent["position"] == "last":
-        candidates = candidates[-1:] if candidates else []
-    
-    # Return just the elements
-    return [elem for score, elem in candidates[:5]]  # Top 5 candidates
-
-
-def _llm_fallback(cli: GeminiCLI, action_description: str, max_attempts: int) -> Dict:
-    """
-    Fallback to LLM when executor cannot determine target.
-    This should be rare - executor should handle most cases.
-    """
-    for attempt in range(max_attempts):
-        try:
-            ui_context = format_ui_for_llm(max_elements=40)
-            logger.debug(f"UI Context:\n{ui_context[:500]}")
-            
-            # Get app context for better targeting
-            from ..utils.accessibility_reader import get_frontmost_app
-            app_info = get_frontmost_app()
-            app_name = app_info.get("app", "").lower()
-            
-            # Build context-aware prompt
-            prompt = f"""You are helping navigate a {app_info.get("app", "application")}. Here are the clickable UI elements:
-
-{ui_context}
-
-Task: {action_description}
-
-IMPORTANT GUIDELINES:
-- AVOID: Channel logos, profile pictures, navigation bars, headers, sidebars
-- TARGET: Video thumbnails, article titles, search results, content items (usually in the main content area)
-- YouTube: Videos are in the center/right area with thumbnails and titles below them
-- YouTube: First video is typically at coordinates around (365, 512) in the main grid
-- Google: Search results are center-page with blue link titles
-- Generic: Main content is usually center-right, not in left sidebar or top header
-
-First, briefly explain which element type you'll click and why (one sentence).
-Then on a new line, provide ONLY the exact element text to click.
-
-Format:
-Reasoning: [one sentence explaining your choice]
-Element: [exact text to click]
-
-Or respond with:
-DONE (if task is complete)
-"""
-            
-            try:
-                response = cli.generate(prompt).strip()
-            except Exception as llm_error:
-                logger.warning(f"LLM call failed: {llm_error}")
-                # Try to find element by partial description
-                response = "DONE"
-            
-            if "DONE" in response.upper():
-                logger.info("Vision task marked as done")
-                return {"success": True, "done": True}
-            
-            # Parse response (may have reasoning + element)
-            element_text = response
-            if "Element:" in response:
-                # Extract the element text from structured response
-                lines = response.split("\n")
-                for line in lines:
-                    if line.startswith("Reasoning:"):
-                        logger.info(f"  LLM reasoning: {line[10:].strip()}")
-                    elif line.startswith("Element:"):
-                        element_text = line[8:].strip()
-            
-            logger.info(f"  Looking for element: '{element_text}'")
-            
-            # Find and click the element
-            element = find_element_by_text(element_text)
-            
-            if element:
-                click_element(element)
-                logger.info(f"Clicked: {response}")
-                return {"success": True}
-            else:
-                logger.warning(f"Element not found: {response}")
-                # Fallback: try direct click if coordinates given
-                time.sleep(0.5)
-                
-        except Exception as e:
-            logger.error(f"Vision action failed (attempt {attempt+1}): {e}")
-            time.sleep(0.3)
-    
-    # After all retries fail, return success to avoid hanging
-    logger.warning("Vision action failed after retries - marking as complete to continue")
-    return {"success": True, "error": "Could not complete vision action, continuing anyway"}
 
 
 def smart_click(text_to_find: str) -> bool:

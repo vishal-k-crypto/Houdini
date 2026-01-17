@@ -583,6 +583,7 @@ Output JSON:
 - Finding and clicking UI elements on ANY website
 - Clicking search boxes, buttons, links, videos, menus
 - ANY interaction with website content
+- CRITICAL: When interacting with websites, suffixes like "on the webpage" or "in page content" to distinguish from browser chrome!
 
 ### Use BLIND (step_type: "blind") ONLY for:
 - Opening apps via Spotlight: ["hotkey:command,space", "type:AppName", "key:return", "wait:1.5"]
@@ -602,7 +603,7 @@ Output JSON:
   "macro_steps": [
     {{"step": "Launch Safari", "step_type": "blind", "suggested_actions": ["hotkey:command,space", "type:Safari", "key:return", "wait:2"]}},
     {{"step": "Navigate to YouTube", "step_type": "blind", "suggested_actions": ["hotkey:command,l", "type:youtube.com", "key:return", "wait:3"]}},
-    {{"step": "Find and click the search box", "step_type": "vision", "suggested_actions": ["click:search box at top of YouTube page"]}},
+    {{"step": "Find and click the search box", "step_type": "vision", "suggested_actions": ["click:search box at top of YouTube website content"]}},
     {{"step": "Type search query and search", "step_type": "blind", "suggested_actions": ["type:Python tutorials", "key:return", "wait:2"]}},
     {{"step": "Click the first video result", "step_type": "vision", "suggested_actions": ["click:first video thumbnail in results"]}}
   ]

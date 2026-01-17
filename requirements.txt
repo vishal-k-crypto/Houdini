@@ -93,3 +93,16 @@ ultralytics>=8.0.0        # YOLOv8 for icon detection
 # Increases accuracy but adds ~2GB model download
 # transformers>=4.36.0    # Florence-2 captioning
 
+# ============================================================
+# TINYCLICK - Fast Pixel-Precise Click Prediction (~250ms)
+# ============================================================
+# Samsung's TinyClick model for GUI automation:
+# - Fine-tuned Florence-2 architecture (0.27B params)
+# - 73.8% accuracy on Screenspot benchmark
+# - 160x faster than VLM cloud calls
+# - MPS (Metal) acceleration on Apple Silicon
+#
+# To enable: pip install transformers accelerate torch
+# Model auto-downloads from HuggingFace (~600MB)
+transformers>=4.36.0
+accelerate>=0.25.0
