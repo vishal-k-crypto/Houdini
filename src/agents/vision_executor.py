@@ -25,7 +25,8 @@ try:
     from ..utils.probability_model import (
         get_probability_model,
         analyze_task_flexibility,
-        get_flexible_execution_params
+        get_flexible_execution_params,
+        analyze_task_ambiguity,
     )
     PROBABILITY_MODEL_AVAILABLE = True
 except ImportError:
@@ -129,6 +130,23 @@ def execute_vision_action(cli, action_description: str, max_attempts: int = 3,
         result["match_probability"] = 1.0  # Accessibility matches are exact
         result["flexibility"] = flexibility_info
         return result
+    
+    # If accessibility found candidates but no match, pass count for ambiguity analysis
+    candidate_count = result.get("candidate_count", 0)
+    
+    # Recalculate params with candidate count if we have it
+    if PROBABILITY_MODEL_AVAILABLE and candidate_count > 0 and not execution_params:
+        logger.info(f"  🔄 Re-analyzing with {candidate_count} candidates found...")
+        exec_params = get_flexible_execution_params(action_description, context, candidate_count)
+        
+        # Log ambiguity info if present
+        if exec_params.get('ambiguity_analysis'):
+            amb = exec_params['ambiguity_analysis']
+            if amb.get('ambiguity_score', 0) > 0.3:
+                logger.info(f"  ⚠️ Ambiguity score: {amb['ambiguity_score']:.2f}")
+                logger.info(f"     Targets estimate: {amb.get('target_count_estimate', 1)}")
+                if exec_params.get('disambiguation_hints'):
+                    logger.info(f"     Hints: {exec_params['disambiguation_hints'][:2]}")
 
     # Get dynamic match threshold from probability model
     min_match_prob = exec_params.get('min_match_probability', 0.5)
@@ -353,7 +371,7 @@ def _analyze_and_execute(action_description: str) -> Dict:
     
     if not candidates:
         logger.info("  No matching candidates found")
-        return {"success": False, "reason": "no_match"}
+        return {"success": False, "reason": "no_match", "candidate_count": 0}
     
     # Check for explicit address bar intent
     explicit_nav_intent = any(w in desc_lower for w in ['address', 'url', 'link', 'bar', 'omnibox', 'browser', 'navigation'])
@@ -384,7 +402,7 @@ def _analyze_and_execute(action_description: str) -> Dict:
     
     if not candidates:
         logger.info("  No matching candidates after refinement")
-        return {"success": False, "reason": "no_match_after_refinement"}
+        return {"success": False, "reason": "no_match_after_refinement", "candidate_count": len(refined_candidates)}
     
     # Log top candidates
     for i, (score, elem, matched) in enumerate(candidates[:3]):
@@ -394,10 +412,12 @@ def _analyze_and_execute(action_description: str) -> Dict:
     best_score, best_elem, best_matched = candidates[0]
     
     if best_score >= 0.3:  # Lower threshold for reliability
-        return _perform_click(best_elem)
+        result = _perform_click(best_elem)
+        result["candidate_count"] = len(candidates)
+        return result
     else:
         logger.info(f"  Best score {best_score:.2f} too low, deferring to vision fallback")
-        return {"success": False, "reason": "low_confidence"}
+        return {"success": False, "reason": "low_confidence", "candidate_count": len(candidates)}
 
 
 def _perform_click(target):

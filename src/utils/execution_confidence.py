@@ -176,6 +176,17 @@ class ConfidenceCalibrator:
             calibrated = temp_calibrated
         
         calibrated = max(0.0, min(1.0, calibrated))
+        
+        # SAFEGUARD: Detect poisoned calibration
+        # If calibration produces unreasonably low scores for reasonable inputs,
+        # the calibration data is likely corrupted. Fall back to raw scores.
+        if raw_score > 0.4 and calibrated < 0.1:
+            logger.warning(f"Calibration anomaly detected: raw={raw_score:.2f} -> calibrated={calibrated:.2f}")
+            logger.warning("Falling back to uncalibrated scores. Consider resetting calibration data.")
+            # Return raw with light regularization
+            regularized = 0.7 * raw_score + 0.3 * 0.5
+            return regularized, regularized - raw_score
+        
         adjustment = calibrated - raw_score
         
         return calibrated, adjustment
@@ -1025,6 +1036,7 @@ class ExecutionConfidenceModel:
         action_params: Dict[str, Any],
         context: Optional[Dict[str, Any]] = None,
         element_info: Optional[Dict[str, Any]] = None,
+        ambiguity_info: Optional[Dict[str, Any]] = None,
     ) -> ConfidenceRating:
         """
         Rate an action before execution.
@@ -1034,6 +1046,8 @@ class ExecutionConfidenceModel:
             action_params: Parameters for the action
             context: Current execution context (app, screen state, etc.)
             element_info: Information about target element (if any)
+            ambiguity_info: Optional ambiguity analysis from TaskProbabilityModel
+                           (contains ambiguity_score, needs_verification, etc.)
         
         Returns:
             ConfidenceRating with score, level, and decision
@@ -1073,6 +1087,18 @@ class ExecutionConfidenceModel:
             # User provided reasoning - boost confidence
             raw_score += 0.04
         
+        # NEW: Adjust based on ambiguity analysis
+        # High ambiguity reduces confidence (we're less sure about the target)
+        if ambiguity_info:
+            ambiguity_score = ambiguity_info.get("ambiguity_score", 0.0)
+            if ambiguity_score > 0.5:
+                # High ambiguity - reduce confidence
+                raw_score -= 0.1
+            elif ambiguity_score > 0.3:
+                # Moderate ambiguity - slight reduction
+                raw_score -= 0.05
+            # Low ambiguity (specific task) - no penalty
+        
         # Ensure score stays in valid range
         raw_score = max(0.0, min(1.0, raw_score))
         
@@ -1085,9 +1111,9 @@ class ExecutionConfidenceModel:
         # 5. Determine confidence level
         level = self._get_confidence_level(score_10)
         
-        # 6. Determine decision and strategy
+        # 6. Determine decision and strategy (now considers ambiguity)
         decision, retry_strategy, alternatives = self._make_decision(
-            level, action_type, action_params, context
+            level, action_type, action_params, context, ambiguity_info
         )
         
         # 7. Generate reasoning
@@ -1290,9 +1316,13 @@ class ExecutionConfidenceModel:
         action_type: str,
         action_params: Dict,
         context: Optional[Dict],
+        ambiguity_info: Optional[Dict] = None,
     ) -> Tuple[ActionDecision, Optional[str], List[str]]:
         """
-        Make execution decision based on confidence level.
+        Make execution decision based on confidence level and ambiguity.
+        
+        When ambiguity is high, we increase verification requirements
+        even if confidence is otherwise acceptable.
         
         Returns:
             (decision, retry_strategy, alternative_actions)
@@ -1300,18 +1330,43 @@ class ExecutionConfidenceModel:
         alternatives = []
         retry_strategy = None
         
+        # Check ambiguity - may override confidence-based decisions
+        needs_extra_verification = False
+        ambiguity_score = 0.0
+        
+        if ambiguity_info:
+            ambiguity_score = ambiguity_info.get("ambiguity_score", 0.0)
+            needs_extra_verification = ambiguity_info.get("needs_verification", False)
+            
+            # High ambiguity with many potential targets -> require verification
+            if ambiguity_score > 0.6:
+                # For high ambiguity, upgrade decision to require verification
+                if level == ConfidenceLevel.CRITICAL:
+                    level = ConfidenceLevel.HIGH  # Downgrade to require verification
+                elif level == ConfidenceLevel.HIGH:
+                    level = ConfidenceLevel.MODERATE  # Require checkpoint
+        
         if level == ConfidenceLevel.CRITICAL:
             # Very high confidence - execute immediately
             return ActionDecision.EXECUTE, None, []
         
         elif level == ConfidenceLevel.HIGH:
             # High confidence - execute with light verification
+            # Unless ambiguity requires stricter verification
+            if needs_extra_verification or ambiguity_score > 0.4:
+                return ActionDecision.EXECUTE_CHECKPOINT, "verify_after_action", []
             return ActionDecision.EXECUTE_VERIFY, None, []
         
         elif level == ConfidenceLevel.MODERATE:
             # Moderate confidence - execute with checkpoint
             # Generate alternatives in case of failure
             alternatives = self._generate_alternatives(action_type, action_params)
+            
+            # High ambiguity at moderate confidence -> consider deferring
+            if ambiguity_score > 0.5 and ambiguity_info.get("target_count_estimate", 1) > 3:
+                retry_strategy = "verify_target_first"
+                return ActionDecision.DEFER_CONFIRM, retry_strategy, alternatives
+            
             return ActionDecision.EXECUTE_CHECKPOINT, "retry_with_verification", alternatives
         
         elif level == ConfidenceLevel.LOW:
@@ -1719,14 +1774,23 @@ def rate_action(
     context: Optional[Dict] = None,
     element_info: Optional[Dict] = None,
 ) -> ConfidenceRating:
-    """Quick access to action rating."""
-    # BYPASS: User requested to disable reinforcement learning / confidence checks
-    # Always return CRITICAL confidence to ensure execution proceeds
-    return ConfidenceRating(
-        score=10.0,
-        level=ConfidenceLevel.CRITICAL,
-        decision=ActionDecision.EXECUTE,
-        reasoning="RL Disabled: Forced execution"
+    """
+    Rate an action before execution on 0-10 scale.
+    
+    Decision Logic based on confidence level:
+    - HIGH/CRITICAL (7-10): Execute immediately
+    - MODERATE (5-6.9): Execute with checkpoint/verification for rollback
+    - LOW/VERY_LOW (1-4.9): Defer, gather more context, or request confirmation
+    - UNCERTAIN (0-0.9): Do not execute, need more information
+    
+    This prevents blind clicks by evaluating:
+    - Historical success rate for this action type
+    - Context fit (right app, right screen state)
+    - Action complexity (simpler = more reliable)
+    - Element certainty (if clicking, how sure are we about the target)
+    """
+    return get_confidence_model().rate_action(
+        action_type, action_params, context, element_info
     )
 
 

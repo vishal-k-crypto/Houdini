@@ -134,19 +134,17 @@ def convert_macos_to_pyautogui_coords(x: int, y: int) -> Tuple[int, int]:
     """
     Convert macOS coordinates to PyAutoGUI coordinates.
     
-    macOS Accessibility API: Origin at TOP-LEFT of screen (not bottom-left!)
-    PyAutoGUI: Origin at TOP-LEFT of screen
+    macOS Accessibility API: Origin at BOTTOM-LEFT of screen (y increases upward)
+    PyAutoGUI: Origin at TOP-LEFT of screen (y increases downward)
     
-    IMPORTANT: Despite common misconception, AXPosition coordinates from
-    Accessibility API are ALREADY in screen coordinates with (0,0) at top-left.
-    No Y-axis flip is needed for position values from AXUIElement.
+    Formula: PyAutoGUI_Y = Screen_Height - macOS_Y
     
-    The only conversion needed is for Retina displays if the APIs report
-    different resolutions.
+    This conversion is CRITICAL for accurate click targeting!
     """
-    # AXPosition is already in screen coords (top-left origin)
-    # Just return as-is since both systems use same origin
-    return (int(x), int(y))
+    screen_height = get_screen_height()
+    # Flip Y coordinate: macOS uses bottom-left origin, PyAutoGUI uses top-left
+    pyautogui_y = screen_height - int(y)
+    return (int(x), pyautogui_y)
 
 
 @dataclass

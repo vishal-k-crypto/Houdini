@@ -556,13 +556,17 @@ Use this analysis to:
 3. Add verification steps if uncertainty is high
 """
         
-        prompt = f"""You are a MACRO PLANNER. Generate high-level steps that guide a HUMAN-LIKE execution.
+        prompt = f"""You are a MACRO PLANNER using HYBRID PLANNING architecture.
 
-CRITICAL: Think like a HUMAN using a computer, NOT a programmer using shortcuts!
+CRITICAL ARCHITECTURE:
+- You provide BOTH high-level steps AND concrete action sequences
+- The executor uses your suggested_actions DIRECTLY without calling another LLM
+- This makes execution FAST and DETERMINISTIC
+
 {flexibility_context}
 TASK: {task}
 
-Output JSON:
+## OUTPUT FORMAT (JSON):
 {{
     "macro_steps": [
         {{
@@ -570,59 +574,73 @@ Output JSON:
             "context": "What should be visible after",
             "potential_issues": "What could go wrong",
             "step_type": "blind" or "vision",
-            "suggested_actions": ["action1", "action2"]
+            "suggested_actions": ["action1", "action2"]  // ⚠️ MANDATORY - executor uses these directly!
         }}
     ],
     "expected_outcome": "What success looks like",
     "success_criteria": "How to verify completion"
 }}
 
-## HUMAN-LIKE INTERACTION RULES
+## ACTION FORMAT:
+- Hotkey: "hotkey:command,space" (comma-separated modifiers)
+- Type text: "type:Hello World"
+- Press key: "key:return" or "key:escape" or "key:tab"
+- Wait: "wait:1.5" (seconds)
+- Vision click: "click:description of element to click"
 
-### Use VISION (step_type: "vision") for:
-- Finding and clicking UI elements on ANY website
-- Clicking search boxes, buttons, links, videos, menus
-- ANY interaction with website content
-- CRITICAL: When interacting with websites, suffixes like "on the webpage" or "in page content" to distinguish from browser chrome!
+## STEP TYPE RULES:
 
-### Use BLIND (step_type: "blind") ONLY for:
-- Opening apps via Spotlight: ["hotkey:command,space", "type:AppName", "key:return", "wait:1.5"]
-- Copy/Paste: ["hotkey:command,c"] or ["hotkey:command,v"]
-- New tab/Close tab: ["hotkey:command,t"] or ["hotkey:command,w"]
-- Initial URL bar focus: ["hotkey:command,l", "type:website.com", "key:return"]
+### step_type: "blind" (keyboard-only, no vision needed):
+- Opening apps: ["hotkey:command,space", "type:Safari", "key:return", "wait:2"]
+- URL navigation: ["hotkey:command,l", "type:google.com", "key:return", "wait:2"]
+- Keyboard shortcuts: ["hotkey:command,c"], ["hotkey:command,v"]
+- Typing after click: ["type:search query", "key:return"]
 
-### NEVER DO:
-- Use URL query parameters (e.g., youtube.com/results?q=...) - SEARCH LIKE A HUMAN!
-- Use hotkeys for website search - websites have DIFFERENT shortcuts that often don't work
-- Skip the vision step when interacting with website content
+### step_type: "vision" (requires finding/clicking UI element):
+- Website search boxes: ["click:search box at top of page"]
+- Video thumbnails: ["click:first video thumbnail in the grid"]
+- Buttons/Links: ["click:Submit button", "click:Sign In link"]
+- CRITICAL: Be SPECIFIC about which element! Don't say "click search", say "click:search input field on the webpage"
 
-## EXAMPLES
+## COMPLETE EXAMPLES:
 
-### "Open YouTube and search for Python tutorials":
+### Task: "Open YouTube and search for Python tutorials"
 {{
   "macro_steps": [
-    {{"step": "Launch Safari", "step_type": "blind", "suggested_actions": ["hotkey:command,space", "type:Safari", "key:return", "wait:2"]}},
-    {{"step": "Navigate to YouTube", "step_type": "blind", "suggested_actions": ["hotkey:command,l", "type:youtube.com", "key:return", "wait:3"]}},
-    {{"step": "Find and click the search box", "step_type": "vision", "suggested_actions": ["click:search box at top of YouTube website content"]}},
-    {{"step": "Type search query and search", "step_type": "blind", "suggested_actions": ["type:Python tutorials", "key:return", "wait:2"]}},
-    {{"step": "Click the first video result", "step_type": "vision", "suggested_actions": ["click:first video thumbnail in results"]}}
-  ]
+    {{"step": "Launch Safari browser", "step_type": "blind", "context": "Safari window visible", "suggested_actions": ["hotkey:command,space", "type:Safari", "key:return", "wait:2"]}},
+    {{"step": "Navigate to YouTube", "step_type": "blind", "context": "YouTube homepage loaded", "suggested_actions": ["hotkey:command,l", "type:youtube.com", "key:return", "wait:3"]}},
+    {{"step": "Click the YouTube search box", "step_type": "vision", "context": "Search box focused", "suggested_actions": ["click:search input box at top of YouTube page"]}},
+    {{"step": "Type search query", "step_type": "blind", "context": "Search results displayed", "suggested_actions": ["type:Python tutorials", "key:return", "wait:2"]}},
+    {{"step": "Click first video", "step_type": "vision", "context": "Video playing", "suggested_actions": ["click:first video thumbnail in search results"]}}
+  ],
+  "expected_outcome": "Python tutorials video is playing on YouTube",
+  "success_criteria": "Video player is visible and video is playing"
 }}
 
-### "Search for machine learning on Google":
+### Task: "Send a WhatsApp message to John saying hello"
 {{
   "macro_steps": [
-    {{"step": "Open browser and go to Google", "step_type": "blind", "suggested_actions": ["hotkey:command,space", "type:Safari", "key:return", "wait:2", "hotkey:command,l", "type:google.com", "key:return", "wait:2"]}},
-    {{"step": "Click the Google search box", "step_type": "vision", "suggested_actions": ["click:search input field"]}},
-    {{"step": "Type search and submit", "step_type": "blind", "suggested_actions": ["type:machine learning", "key:return"]}}
-  ]
+    {{"step": "Open WhatsApp", "step_type": "blind", "context": "WhatsApp window visible", "suggested_actions": ["hotkey:command,space", "type:WhatsApp", "key:return", "wait:2"]}},
+    {{"step": "Search for John contact", "step_type": "blind", "context": "Search results visible", "suggested_actions": ["hotkey:command,f", "type:John", "wait:0.5"]}},
+    {{"step": "Click John's chat", "step_type": "vision", "context": "John's chat open", "suggested_actions": ["click:John in the contact/chat list"]}},
+    {{"step": "Type and send message", "step_type": "blind", "context": "Message sent", "suggested_actions": ["type:hello", "key:return"]}}
+  ],
+  "expected_outcome": "Message 'hello' sent to John in WhatsApp",
+  "success_criteria": "Message appears in chat with sent status"
 }}
 
-Generate the macro plan:"""
+⚠️ CRITICAL RULES:
+1. EVERY step MUST have suggested_actions - the executor depends on them!
+2. For vision steps, use "click:specific element description"
+3. For blind steps, use concrete keyboard actions
+4. Include "wait:X" after actions that need time to complete (app launches, page loads)
+5. Be SPECIFIC in element descriptions - "first video thumbnail" not just "video"
+
+Generate the macro plan for the task:"""
         
         try:
             # Show that we're waiting for LLM to plan
-            self._show("planner", "⏳ Creating macro plan...", "thinking")
+            self._show("planner", "⏳ Creating hybrid macro plan...", "thinking")
             
             response = self.client.generate_json(prompt, temperature=0.3)
             
@@ -641,6 +659,16 @@ Generate the macro plan:"""
             if not macro_steps:
                 raise ValueError("No macro steps generated")
             
+            # HYBRID PLANNING VALIDATION: Ensure all steps have suggested_actions
+            for i, step in enumerate(macro_steps):
+                suggested = step.get("suggested_actions", [])
+                if not suggested or len(suggested) == 0:
+                    step_desc = step.get('step', f'Step {i+1}')
+                    logger.warning(f"⚠️ HYBRID PLANNING: Step '{step_desc}' missing suggested_actions - execution will be slower!")
+                    self._show("planner", f"⚠️ Step {i+1} missing actions - will need LLM fallback", "warning")
+                else:
+                    logger.info(f"✅ Step {i+1} has {len(suggested)} pre-planned actions (deterministic execution)")
+            
             plan = MacroPlan(
                 task=task,
                 macro_steps=macro_steps,
@@ -650,7 +678,9 @@ Generate the macro plan:"""
             
             for i, step in enumerate(macro_steps, 1):
                 step_desc = step.get('step', 'Unknown') if isinstance(step, dict) else str(step)
-                self._show("planner", f"Step {i}: {step_desc}", "planning")
+                step_type = step.get('step_type', 'blind') if isinstance(step, dict) else 'blind'
+                action_count = len(step.get('suggested_actions', [])) if isinstance(step, dict) else 0
+                self._show("planner", f"Step {i} [{step_type}]: {step_desc} ({action_count} actions)", "planning")
             
             return plan
             
@@ -714,7 +744,9 @@ Generate the macro plan:"""
         # AFTER action execution instead.
         
         # Execute the micro actions
-        success = self._execute_micro_actions(micro_actions)
+        # OPTIMIZATION: Skip confidence gating for pre-planned actions (already validated by planner)
+        has_preplanned_actions = bool(macro_step.get("suggested_actions"))
+        success = self._execute_micro_actions(micro_actions, skip_confidence_gating=has_preplanned_actions)
         
         # Check expectations AFTER execution if we have expected context
         if success and expected_context:
@@ -724,14 +756,47 @@ Generate the macro plan:"""
             # Capture fresh screen context after actions
             post_screen = self._capture_screen_context()
             
+            # ========== CONNECTION ERROR DETECTION ==========
+            # Check if browser shows "can't be reached" or similar errors
+            # If so, attempt WARP VPN recovery
+            if self._detect_connection_error(post_screen):
+                logger.warning("🌐 Connection error detected after navigation")
+                if self._handle_connection_error():
+                    # Recovery successful, re-capture screen
+                    post_screen = self._capture_screen_context()
+                    logger.info("✅ Recovered from connection error via WARP")
+                else:
+                    logger.error("❌ WARP recovery failed")
+                    return {"complete": False, "needs_supervisor": True, 
+                            "reason": "Website unreachable - WARP recovery failed"}
+            
             if not self._screen_matches_expectation(post_screen, expected_context):
                 logger.warning(f"Post-execution screen doesn't match expectation: {expected_context}")
-                # Don't fail immediately - the task might still be progressing
-                # Just note it for the supervisor
-                self.state.supervisor_notes.append(
-                    f"Step '{step_desc}' executed but screen shows {post_screen.app_name} "
-                    f"instead of expected '{expected_context}'"
+                
+                # ========== ADAPTIVE RE-PLANNING ==========
+                # Screen shows something unexpected (ad page, intermediate screen, etc.)
+                # Instead of continuing blindly, re-plan from current state
+                self._show("system", "⚠️ Unexpected screen - triggering adaptive re-plan", "warning")
+                
+                replan_result = self._adaptive_replan(
+                    original_task=self.state.plan.task if hasattr(self.state, 'plan') and self.state.plan else "",
+                    current_step=step_desc,
+                    expected=expected_context,
+                    actual_screen=post_screen,
+                    remaining_steps=self.state.current_macro_step_index if hasattr(self.state, 'current_macro_step_index') else 0
                 )
+                
+                if replan_result and replan_result.get("new_steps"):
+                    # Insert new steps into the plan
+                    logger.info(f"🔄 Re-plan generated {len(replan_result['new_steps'])} new steps")
+                    self._show("system", f"🔄 Re-planning: {len(replan_result['new_steps'])} new steps to recover", "info")
+                    return {"complete": True, "needs_replan": True, "new_steps": replan_result["new_steps"]}
+                else:
+                    # Just note it for supervisor (fallback)
+                    self.state.supervisor_notes.append(
+                        f"Step '{step_desc}' executed but screen shows {post_screen.app_name} "
+                        f"instead of expected '{expected_context}'"
+                    )
         
         return {"complete": success, "needs_supervisor": not success}
     
@@ -945,7 +1010,7 @@ Generate actions:"""
             logger.error(f"Micro action generation failed: {e}")
             return []
     
-    def _execute_micro_actions(self, actions: List[MicroAction]) -> bool:
+    def _execute_micro_actions(self, actions: List[MicroAction], skip_confidence_gating: bool = False) -> bool:
         """Execute a list of micro actions with event-driven waiting and verification."""
         import pyautogui
         from ..utils.accessibility_reader import get_frontmost_app
@@ -975,8 +1040,16 @@ Generate actions:"""
                 
                 # ========== CONFIDENCE GATING ==========
                 # Rate action before execution using the confidence model
+                # OPTIMIZATION: Skip for pre-planned actions (already validated by planner)
+                # This matches the working behavior from the 3:33am session.
+                
                 rating = None
-                if CONFIDENCE_MODEL_AVAILABLE:
+                checkpoint_needed = False
+                
+                if skip_confidence_gating:
+                    # Pre-planned actions from planner - execute directly without rating
+                    pass  # No confidence check needed
+                elif CONFIDENCE_MODEL_AVAILABLE:
                     context = {
                         "current_app": self._get_current_app_name(),
                         "screen_active": True,
@@ -989,19 +1062,64 @@ Generate actions:"""
                     
                     logger.info(f"📊 Action confidence: {rating.score:.1f}/10 ({rating.level.value})")
                     
-                    # Defer to supervisor if confidence too low
-                    # Lower threshold (2.0 instead of 3.0) - only defer truly uncertain actions
-                    if rating.score < 2.0:
-                        logger.warning(f"⚠️ Low confidence ({rating.score:.1f}), deferring to supervisor")
-                        self._show("executor", f"⚠️ Low confidence ({rating.score:.1f}) - needs help", "warning")
-                        # Store the rating for the failed action to learn from
+                    # TIER 1: HIGH/CRITICAL (7-10) - Execute immediately
+                    if rating.score >= 7.0:
+                        self._show("executor", f"✅ High confidence ({rating.score:.1f}) - executing", "success")
+                        # Proceed with execution below
+                    
+                    # TIER 2: MODERATE (5-6.9) - Execute with checkpoint for rollback
+                    elif rating.score >= 5.0:
+                        self._show("executor", f"⚡ Moderate confidence ({rating.score:.1f}) - executing with checkpoint", "info")
+                        checkpoint_needed = True
+                        # Store checkpoint state for potential rollback
+                        self.state.supervisor_notes.append(
+                            f"Checkpoint: {action.description} (confidence: {rating.score:.1f})"
+                        )
+                        # Proceed with execution below
+                    
+                    # TIER 3: LOW (3-4.9) - Gather more context first
+                    elif rating.score >= 3.0:
+                        logger.warning(f"⚠️ Low confidence ({rating.score:.1f}), gathering more context")
+                        self._show("executor", f"🔍 Low confidence ({rating.score:.1f}) - gathering context", "warning")
+                        
+                        # Capture fresh screenshot for better understanding
+                        time.sleep(0.3)
+                        fresh_context = self._capture_screen_context()
+                        self.state.last_screen_context = fresh_context
+                        
+                        # Re-rate with fresh context
+                        context["fresh_screen"] = True
+                        context["visible_elements"] = len(fresh_context.visible_elements)
+                        rating = rate_action(action.action_type, action.params, context=context)
+                        
+                        if rating.score >= 4.0:
+                            self._show("executor", f"📸 Re-rated: {rating.score:.1f} - proceeding", "info")
+                            checkpoint_needed = True
+                        else:
+                            self._show("executor", f"⚠️ Still low confidence - deferring", "warning")
+                            self.state.executed_actions.append({
+                                "type": action.action_type,
+                                "params": action.params,
+                                "description": action.description,
+                                "timestamp": datetime.now().isoformat(),
+                                "confidence_score": rating.score,
+                                "deferred": True,
+                                "reason": "low_confidence_after_context"
+                            })
+                            return False  # Trigger supervisor guidance
+                    
+                    # TIER 4: VERY_LOW/UNCERTAIN (0-2.9) - Defer to supervisor
+                    else:
+                        logger.warning(f"⚠️ Very low confidence ({rating.score:.1f}), deferring to supervisor")
+                        self._show("executor", f"🛑 Very low confidence ({rating.score:.1f}) - needs supervisor", "warning")
                         self.state.executed_actions.append({
                             "type": action.action_type,
                             "params": action.params,
                             "description": action.description,
                             "timestamp": datetime.now().isoformat(),
                             "confidence_score": rating.score,
-                            "deferred": True
+                            "deferred": True,
+                            "reason": "very_low_confidence"
                         })
                         return False  # Will trigger supervisor guidance
                 
@@ -1087,7 +1205,27 @@ Generate actions:"""
                         self._replay_logger.log_key_press(key)
                     
                 elif action.action_type == "wait":
-                    secs = action.params.get("seconds", 0.5)
+                    secs = action.params.get("seconds")
+                    
+                    # FIX: Handle None seconds - try to extract from description or default
+                    if secs is None:
+                        # Try to extract duration from description like "Wait 3s" or "Wait for 2 seconds"
+                        import re
+                        desc = action.description.lower()
+                        match = re.search(r'(\d+(?:\.\d+)?)\s*(?:s|sec|second)', desc)
+                        if match:
+                            secs = float(match.group(1))
+                            logger.debug(f"Extracted wait duration from description: {secs}s")
+                        else:
+                            # Smart default based on context
+                            if any(word in desc for word in ['page', 'load', 'content', 'dynamic']):
+                                secs = 2.0  # Longer wait for page loads
+                            elif any(word in desc for word in ['spotlight', 'app', 'open']):
+                                secs = 0.5  # Quick wait for app switching
+                            else:
+                                secs = 1.0  # Reasonable default
+                            logger.debug(f"Using context-based wait duration: {secs}s")
+                    
                     # FIX: Always wait AT LEAST the specified duration
                     # Previously, smart wait would exit early when UI appeared stable,
                     # causing "Wait 2s" to complete in ~1.1s
@@ -1141,11 +1279,30 @@ Generate actions:"""
                     "timestamp": datetime.now().isoformat(),
                     "confidence_score": rating.score if rating else None,
                     "success": True,
-                    "duration_ms": duration_ms
+                    "duration_ms": duration_ms,
+                    "checkpoint": checkpoint_needed
                 })
                 
                 # Show completion in thinking window
                 self._show("executor", f"✓ Done ({duration_ms:.0f}ms)", "success")
+                
+                # ========== CHECKPOINT VERIFICATION ==========
+                # For moderate-confidence actions, verify the result
+                if checkpoint_needed and rating:
+                    time.sleep(0.2)  # Brief pause for UI to settle
+                    
+                    # Quick screen check to verify action had expected effect
+                    post_app = self._get_current_app_name()
+                    if post_app:
+                        # Check if we're still in a reasonable state
+                        # (e.g., didn't accidentally close the app or switch away)
+                        pre_app = context.get("current_app", "")
+                        if pre_app and post_app.lower() != pre_app.lower():
+                            # App changed unexpectedly - flag for supervisor
+                            logger.warning(f"⚠️ Checkpoint: App changed from {pre_app} to {post_app}")
+                            self.state.supervisor_notes.append(
+                                f"Checkpoint alert: App changed after '{action.description}'"
+                            )
                 
                 # DELAYED REWARD: Store pending outcome for later commitment
                 # Don't record outcome yet - wait for Supervisor/Verifier to confirm
@@ -1156,7 +1313,8 @@ Generate actions:"""
                         "action_params": action.params,
                         "rating": rating,
                         "execution_time": time.time() - start_time,
-                        "context": {"app": self._get_current_app_name()}
+                        "context": {"app": self._get_current_app_name()},
+                        "checkpoint_verified": checkpoint_needed
                     })
                 
                 # Log action completion to replay
@@ -1979,6 +2137,263 @@ Evolution plan:"""
                 return True
         
         return False
+    
+    # ========== CONNECTION ERROR HANDLING & WARP VPN RECOVERY ==========
+    
+    def _detect_connection_error(self, screen: ScreenContext) -> bool:
+        """
+        Detect if the current browser screen shows a connection error.
+        
+        Checks for common error patterns in window title and page content.
+        """
+        window_lower = screen.window_title.lower()
+        
+        # Common browser connection error patterns
+        error_patterns = [
+            "can't be reached",
+            "cannot be reached", 
+            "err_connection",
+            "dns_probe",
+            "no internet",
+            "check your connection",
+            "server dns address could not be found",
+            "err_name_not_resolved",
+            "this site can't be reached",
+            "unable to connect",
+            "connection refused",
+            "connection timed out",
+            "network error",
+        ]
+        
+        for pattern in error_patterns:
+            if pattern in window_lower:
+                logger.warning(f"🌐 Connection error detected: '{pattern}' in window title")
+                return True
+        
+        # Also check visible elements for error text
+        for elem in screen.visible_elements[:20]:
+            elem_text = str(elem.get("title", "") + " " + elem.get("description", "")).lower()
+            for pattern in error_patterns:
+                if pattern in elem_text:
+                    logger.warning(f"🌐 Connection error detected in UI: '{pattern}'")
+                    return True
+        
+        return False
+    
+    def _enable_warp_vpn(self) -> bool:
+        """
+        Enable Cloudflare WARP VPN by clicking the menu bar icon.
+        
+        Steps:
+        1. Click Cloudflare WARP icon in menu bar
+        2. Wait for menu to appear
+        3. Click Connect/toggle
+        4. Wait for VPN to establish connection
+        
+        Returns True if WARP was successfully enabled.
+        """
+        import pyautogui
+        import time
+        
+        try:
+            self._show("system", "🔌 Enabling Cloudflare WARP VPN...", "info")
+            logger.info("🔌 Attempting to enable Cloudflare WARP VPN")
+            
+            # Try to use vision to find and click WARP icon in menu bar
+            # WARP icon is usually in the top-right menu bar area
+            try:
+                from ..agents.vision_executor import execute_vision_action
+                
+                # Click the WARP menu bar icon
+                result = execute_vision_action(
+                    self.client,
+                    "click: Cloudflare WARP icon in the macOS menu bar (top right, looks like a 1.1.1.1 or orange/blue icon)",
+                    max_attempts=2
+                )
+                
+                if not result.get("success"):
+                    logger.warning("Could not find WARP icon via vision, trying coordinate fallback")
+                    # Fallback: Click near typical menu bar icon location (right side)
+                    screen_width, _ = pyautogui.size()
+                    # WARP is usually around 100-200px from right edge
+                    pyautogui.click(screen_width - 150, 12)
+                
+                time.sleep(0.5)  # Wait for menu to appear
+                
+                # Click Connect or the toggle switch
+                result = execute_vision_action(
+                    self.client,
+                    "click: Connect button or toggle switch in the WARP menu (to enable VPN connection)",
+                    max_attempts=2
+                )
+                
+                if not result.get("success"):
+                    # Fallback: try clicking center of menu that just appeared
+                    screen_width, _ = pyautogui.size()
+                    pyautogui.click(screen_width - 150, 80)
+                
+                # Wait for WARP to connect (5-10 seconds typically)
+                self._show("system", "⏳ Waiting for WARP VPN to connect...", "info")
+                time.sleep(8)
+                
+                # Click elsewhere to close menu
+                pyautogui.click(screen_width // 2, 400)
+                time.sleep(0.3)
+                
+                logger.info("✅ WARP VPN should now be connected")
+                self._show("system", "✅ WARP VPN connected", "success")
+                return True
+                
+            except ImportError:
+                logger.error("Vision executor not available for WARP recovery")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to enable WARP VPN: {e}")
+            self._show("system", f"❌ WARP enable failed: {e}", "error")
+            return False
+    
+    def _handle_connection_error(self, url: str = None) -> bool:
+        """
+        Handle a detected connection error by enabling WARP and reloading.
+        
+        Args:
+            url: Optional URL to reload (if known)
+            
+        Returns True if recovery was successful.
+        """
+        import pyautogui
+        import time
+        
+        self._show("system", "🌐 Connection error detected - attempting WARP recovery", "warning")
+        
+        # Step 1: Enable WARP VPN
+        if not self._enable_warp_vpn():
+            logger.error("WARP VPN recovery failed")
+            return False
+        
+        # Step 2: Reload the page
+        self._show("system", "🔄 Reloading page...", "info")
+        pyautogui.hotkey("command", "r")
+        
+        # Step 3: Wait longer for page to load (connection may be slow initially)
+        time.sleep(7)
+        
+        # Step 4: Check if error is resolved
+        screen = self._capture_screen_context()
+        if self._detect_connection_error(screen):
+            logger.warning("Connection error persists after WARP - may need more time")
+            self._show("system", "⏳ Waiting more for page to load...", "info")
+            time.sleep(5)
+            
+            # Final check
+            screen = self._capture_screen_context()
+            if self._detect_connection_error(screen):
+                self._show("system", "❌ Connection still failing after WARP", "error")
+                return False
+        
+        self._show("system", "✅ Connection recovered!", "success")
+        return True
+
+    def _adaptive_replan(
+        self, 
+        original_task: str, 
+        current_step: str, 
+        expected: str, 
+        actual_screen: ScreenContext,
+        remaining_steps: int = 0
+    ) -> Optional[Dict]:
+        """
+        Adaptive re-planning when the screen state is unexpected.
+        
+        Instead of continuing blindly with the original plan, analyze the current
+        screen state and generate new steps to recover and complete the task.
+        
+        This handles cases like:
+        - Ad popups that need to be dismissed
+        - Intermediate pages (captchas, age verification, etc.)
+        - Wrong page landed on
+        - Navigation derailment
+        
+        Args:
+            original_task: The original user task description
+            current_step: The step that was just executed
+            expected: What screen we expected to see
+            actual_screen: What screen we actually see
+            remaining_steps: How many original steps remain
+            
+        Returns:
+            Dict with 'new_steps' list or None if re-plan failed
+        """
+        logger.info(f"🔄 Adaptive re-planning from unexpected screen state")
+        self._show("planner", "🔄 Analyzing current screen for recovery plan...", "thinking")
+        
+        # Build context about current situation
+        visible_elements_summary = self._summarize_elements(actual_screen.visible_elements[:15])
+        
+        prompt = f"""The automation agent has encountered an unexpected screen and needs to re-plan.
+
+ORIGINAL TASK: {original_task}
+
+JUST EXECUTED STEP: {current_step}
+EXPECTED SCREEN: {expected}
+ACTUAL SCREEN:
+- App: {actual_screen.app_name}
+- Window: {actual_screen.window_title}
+- Visible Elements: {visible_elements_summary}
+
+The screen doesn't match what we expected. This could be:
+1. An ad popup that needs closing (click X or close button)
+2. An intermediate page (captcha, verification, countdown timer)
+3. Wrong page navigation
+4. A dialog/modal that appeared
+
+Analyze the current screen and generate 1-5 recovery steps to get back on track towards completing the original task.
+
+Respond in JSON format:
+{{
+    "analysis": "Brief explanation of what went wrong and why",
+    "recovery_strategy": "How to recover from this state", 
+    "new_steps": [
+        {{"step": "Close the popup/ad", "step_type": "vision", "suggested_actions": ["click:close button or X icon"]}},
+        {{"step": "Wait for page to load", "step_type": "blind", "suggested_actions": ["wait:3"]}},
+        ...
+    ]
+}}
+
+IMPORTANT:
+- Keep suggested_actions in the format: "type:text", "click:element description", "key:keyname", "wait:seconds", "hotkey:cmd,key"
+- Focus on immediate recovery, not re-doing the whole task
+- If it looks like an ad page, include closing the ad
+- If it looks like a countdown timer, include waiting
+- If on completely wrong page, include navigation back"""
+
+        try:
+            response = self.client.generate_json(prompt, temperature=0.3)
+            
+            if response and isinstance(response, dict):
+                analysis = response.get("analysis", "")
+                strategy = response.get("recovery_strategy", "")
+                new_steps = response.get("new_steps", [])
+                
+                if analysis:
+                    logger.info(f"📋 Re-plan analysis: {analysis}")
+                if strategy:
+                    logger.info(f"📋 Recovery strategy: {strategy}")
+                    self._show("planner", f"Recovery: {strategy[:60]}...", "info")
+                
+                if new_steps and len(new_steps) > 0:
+                    for i, step in enumerate(new_steps, 1):
+                        step_desc = step.get("step", f"Step {i}")
+                        self._show("planner", f"Recovery Step {i}: {step_desc}", "thinking")
+                    
+                    return {"new_steps": new_steps, "analysis": analysis}
+                    
+            return None
+            
+        except Exception as e:
+            logger.error(f"Adaptive re-planning failed: {e}")
+            return None
     
     def _verify_step_completion(self, macro_step: Dict) -> bool:
         """

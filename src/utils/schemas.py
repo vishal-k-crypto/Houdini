@@ -112,13 +112,23 @@ class PlannerResponse(BaseModel):
 # =============================================================================
 
 class MacroStep(BaseModel):
-    """High-level macro step from adaptive planner."""
+    """
+    High-level macro step from adaptive planner.
+    
+    HYBRID PLANNING: Each macro step includes BOTH:
+    - High-level description (step) for human understanding
+    - Concrete suggested_actions for deterministic execution
+    """
     step: str = Field(..., description="High-level description of what to do")
     context: str = Field("", description="Expected state after this step")
     potential_issues: Optional[str] = Field(None, description="What could go wrong")
-    suggested_actions: Optional[List[str]] = Field(
-        None, 
-        description="Concrete action patterns like 'hotkey:command,space', 'type:Safari', 'key:return'"
+    step_type: Literal["blind", "vision"] = Field(
+        "blind", 
+        description="'blind' for keyboard actions, 'vision' for UI element clicks"
+    )
+    suggested_actions: List[str] = Field(
+        default_factory=list, 
+        description="REQUIRED: Concrete action patterns like 'hotkey:command,space', 'type:Safari', 'key:return', 'click:element description'"
     )
 
 
