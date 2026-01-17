@@ -151,11 +151,13 @@ class MicroActionParams(BaseModel):
     element: Optional[str] = None     # For click
     x: Optional[int] = None           # For click coordinates
     y: Optional[int] = None           # For click coordinates
+    direction: Optional[str] = None   # For scroll (up/down/left/right)
+    amount: Optional[int] = None      # For scroll amount
 
 
 class MicroAction(BaseModel):
     """Low-level micro action from executor."""
-    type: str = Field(..., description="Action type: hotkey, type, key, wait, click")
+    type: str = Field(..., description="Action type: hotkey, type, key, wait, click, scroll")
     params: MicroActionParams = Field(default_factory=MicroActionParams)
     description: str = Field("", description="Human-readable description")
     requires_screen: bool = Field(False, description="Whether action needs screen check")

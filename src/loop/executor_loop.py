@@ -334,9 +334,19 @@ class ExecutorLoop:
         action = actions[self.state.current_action_idx]
         start_time = time.time()
         
+        # Capture context for learning/replay (screen state + action)
+        screenshot_path = None
+        if self._replay_logger:
+            # Capture screenshot before action (without logging separate event)
+            screenshot_path = self._replay_logger.capture_screenshot()
+        
         # Log action start to replay
         if self._replay_logger and self._replay_logger.current_session:
-            self._replay_logger.log_action(action, "blind")
+            self._replay_logger.log_action(
+                action, 
+                "blind",
+                screenshot_path=screenshot_path
+            )
         
         try:
             success = self._execute_action(action)
@@ -402,8 +412,32 @@ class ExecutorLoop:
         if self.on_vision_needed:
             # Callback to handle vision action
             start_time = time.time()
+            
+            # Capture context for learning/replay
+            screenshot_path = None
+            if self._replay_logger:
+                screenshot_path = self._replay_logger.capture_screenshot()
+            
+            # Log vision action start (was missing before)
+            if self._replay_logger and self._replay_logger.current_session:
+                self._replay_logger.log_action(
+                    action_desc, 
+                    "vision",
+                    screenshot_path=screenshot_path
+                )
+            
             result = self.on_vision_needed(action_desc)
             duration_ms = (time.time() - start_time) * 1000
+            
+            # Log vision action completion
+            if self._replay_logger and self._replay_logger.current_session:
+                self._replay_logger.log_action_complete(
+                    action_desc, 
+                    result.get("success", False), 
+                    duration_ms, 
+                    result.get("error"),
+                    details=result
+                )
             
             # Get method used for learning/debugging
             method_used = result.get("method", "unknown")
