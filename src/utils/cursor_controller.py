@@ -326,11 +326,11 @@ class HumanCursor:
                 (start_x, start_y),
                 (final_x, final_y),
                 control_points,
-                num_samples=max(int(distance / 3), 20)
+                num_samples=min(max(int(distance / 15), 10), 60)
             )
         else:
             # Fallback: linear interpolation with jitter
-            steps = max(int(distance / 5), 10)
+            steps = min(max(int(distance / 15), 10), 60)
             path = [
                 (
                     int(start_x + (x - start_x) * i / steps + random.uniform(-self.config.path_jitter, self.config.path_jitter)),

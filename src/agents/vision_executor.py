@@ -295,10 +295,7 @@ def _analyze_and_execute(action_description: str) -> Dict:
         keywords.extend([q.lower() for q in quoted])
     
     # Extract meaningful words from description
-    skip_words = {'click', 'on', 'the', 'a', 'an', 'button', 'link', 'element', 
-                  'first', 'second', 'last', 'result', 'results', 'matching', 
-                  'title', 'text', 'box', 'field', 'input', 'search', 'homepage',
-                  'site', 'website', 'page'}
+    skip_words = {'click', 'on', 'the', 'a', 'an', 'matching', 'element', 'find', 'locate'}
     words = [w.strip('.,!?') for w in desc_lower.split() 
              if w.strip('.,!?') and w.strip('.,!?') not in skip_words and len(w) > 2]
     keywords.extend(words)

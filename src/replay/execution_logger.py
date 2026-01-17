@@ -44,6 +44,9 @@ class EventType(str, Enum):
     THINKING_SUPERVISOR = "thinking_supervisor"
     THINKING_SYSTEM = "thinking_system"
     
+    # Plan events
+    PLAN_GENERATED = "plan_generated"
+    
     # Action events
     ACTION_START = "action_start"
     ACTION_COMPLETE = "action_complete"
@@ -237,14 +240,17 @@ class ExecutionLogger:
         # Stop cursor tracking
         self._stop_cursor_tracking()
         
-        # Log task completion
+        # Capture final screenshot to show end state
+        final_screenshot = self.capture_screenshot()
+        
+        # Log task completion with final screenshot
         event_type = EventType.TASK_COMPLETE if success else EventType.TASK_FAILED
         self.log_event(event_type, {
             "success": success,
             "error": error,
             "duration_ms": self.current_session.duration_ms(),
             "event_count": len(self.current_session.events),
-        })
+        }, screenshot_path=final_screenshot)
         
         self.current_session.completed_at = datetime.now().isoformat()
         self.current_session.success = success
@@ -314,23 +320,40 @@ class ExecutionLogger:
             "level": level,
         })
     
-    def log_action(self, action: str, action_type: str = "blind"):
-        """Log action start."""
-        self.log_event(EventType.ACTION_START, {
-            "action": action,
-            "action_type": action_type,
+    def log_plan_generated(self, plan: Dict[str, Any]):
+        """Log a generated macro plan."""
+        self.log_event(EventType.PLAN_GENERATED, {
+            "plan": plan
         })
     
+    def log_action(self, action: str, action_type: str = "blind", 
+                   screenshot_path: Optional[str] = None,
+                   state: Optional[Dict] = None):
+        """Log action start with optional state snapshot."""
+        data = {
+            "action": action,
+            "action_type": action_type,
+        }
+        if state:
+            data["state"] = state
+            
+        self.log_event(EventType.ACTION_START, data, screenshot_path=screenshot_path)
+    
     def log_action_complete(self, action: str, success: bool, 
-                           duration_ms: float, error: Optional[str] = None):
+                           duration_ms: float, error: Optional[str] = None,
+                           details: Optional[Dict] = None):
         """Log action completion."""
         event_type = EventType.ACTION_COMPLETE if success else EventType.ACTION_FAILED
-        self.log_event(event_type, {
+        data = {
             "action": action,
             "success": success,
             "duration_ms": duration_ms,
             "error": error,
-        })
+        }
+        if details:
+            data["details"] = details
+            
+        self.log_event(event_type, data)
     
     def log_batch_start(self, batch_idx: int, batch_type: str, description: str):
         """Log batch execution start."""
@@ -381,6 +404,38 @@ class ExecutionLogger:
         """Log text typing."""
         self.log_event(EventType.TEXT_TYPE, {"text": text})
     
+    def capture_screenshot(self) -> Optional[str]:
+        """
+        Capture a screenshot and return the path.
+        Does not log an event.
+        """
+        if not PYAUTOGUI_AVAILABLE or not self.current_session:
+            return None
+            
+        try:
+            import subprocess
+            
+            # Create screenshots directory
+            screenshots_dir = self.sessions_dir.parent / "screenshots"
+            screenshots_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate filename with timestamp
+            timestamp = int(time.time() * 1000)
+            filename = f"{self.current_session.task_id}_{timestamp}.png"
+            filepath = screenshots_dir / filename
+            
+            # Capture screen using macOS screencapture (fast and reliable)
+            result = subprocess.run(
+                ["screencapture", "-x", "-C", str(filepath)],
+                capture_output=True, timeout=5
+            )
+            
+            if result.returncode == 0 and filepath.exists():
+                return str(filepath)
+        except Exception:
+            pass
+        return None
+
     def log_screenshot_auto(self, trigger: str = "checkpoint", description: str = "") -> Optional[str]:
         """
         Automatically capture and log a screenshot.
@@ -392,44 +447,16 @@ class ExecutionLogger:
         Returns:
             Path to saved screenshot, or None if capture failed
         """
-        if not PYAUTOGUI_AVAILABLE:
-            return None
+        screenshot_path = self.capture_screenshot()
         
-        if not self.current_session:
-            return None
-        
-        try:
-            import subprocess
-            import tempfile
+        if screenshot_path:
+            # Log the screenshot event
+            self.log_event(EventType.SCREENSHOT, {
+                "trigger": trigger,
+                "description": description or f"Auto-captured on {trigger}",
+            }, screenshot_path=screenshot_path)
             
-            # Create screenshots directory
-            screenshots_dir = self.sessions_dir.parent / "screenshots"
-            screenshots_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Generate filename with timestamp and trigger
-            timestamp = int(time.time() * 1000)
-            safe_trigger = "".join(c if c.isalnum() else "_" for c in trigger[:20])
-            filename = f"{self.current_session.task_id}_{timestamp}_{safe_trigger}.png"
-            filepath = screenshots_dir / filename
-            
-            # Capture screen using macOS screencapture (fast and reliable)
-            result = subprocess.run(
-                ["screencapture", "-x", "-C", str(filepath)],
-                capture_output=True, timeout=5
-            )
-            
-            if result.returncode == 0 and filepath.exists():
-                # Log the screenshot event
-                self.log_event(EventType.SCREENSHOT, {
-                    "trigger": trigger,
-                    "description": description or f"Auto-captured on {trigger}",
-                }, screenshot_path=str(filepath))
-                
-                return str(filepath)
-        except Exception:
-            pass
-        
-        return None
+        return screenshot_path
     
     def _start_cursor_tracking(self):
         """Start background cursor position tracking."""
@@ -681,7 +708,8 @@ def log_action(action: str, action_type: str = "blind"):
     logger.log_action(action, action_type)
 
 
-def log_action_complete(action: str, success: bool, duration_ms: float, error: Optional[str] = None):
+def log_action_complete(action: str, success: bool, duration_ms: float, 
+                        error: Optional[str] = None, details: Optional[Dict] = None):
     """Log action completion."""
     logger = get_execution_logger()
-    logger.log_action_complete(action, success, duration_ms, error)
+    logger.log_action_complete(action, success, duration_ms, error, details)

@@ -374,6 +374,14 @@ class AdaptiveLoopCoordinator:
                         step_result.get("reason", "Unknown situation")
                     )
                     
+                    # Log supervisor intervention
+                    if self._replay_logger and self._replay_logger.current_session:
+                        self._replay_logger.log_supervisor_intervention(
+                            reason=step_result.get("reason", "Unknown situation"),
+                            decision=str(guidance),
+                            correction=str(guidance.get("new_actions", []))
+                        )
+                    
                     if guidance.get("abort"):
                         self._set_phase(AdaptivePhase.FAILED)
                         break
@@ -399,6 +407,14 @@ class AdaptiveLoopCoordinator:
                     new_steps = step_result["new_steps"]
                     logger.info(f"🔄 Inserting {len(new_steps)} recovery steps from re-plan")
                     self._show("planner", f"🔄 Re-plan: inserting {len(new_steps)} recovery steps", "thinking")
+                    
+                    # Log re-plan to replay system
+                    if self._replay_logger and self._replay_logger.current_session:
+                        self._replay_logger.log_event("replan", {
+                            "reason": step_result.get("reason", "unknown"),
+                            "new_steps": new_steps,
+                            "insert_position": self.state.current_macro_step_idx + 1
+                        })
                     
                     # Insert new steps immediately after current position
                     insert_pos = self.state.current_macro_step_idx + 1
@@ -665,6 +681,14 @@ Generate the macro plan:"""
                 success_criteria=success_criteria
             )
             
+            # Log plan to replay system
+            if self._replay_logger and self._replay_logger.current_session:
+                self._replay_logger.log_plan_generated({
+                    "macro_steps": macro_steps,
+                    "expected_outcome": expected_outcome,
+                    "success_criteria": success_criteria
+                })
+            
             for i, step in enumerate(macro_steps, 1):
                 step_desc = step.get('step', 'Unknown') if isinstance(step, dict) else str(step)
                 self._show("planner", f"Step {i}: {step_desc}", "planning")
@@ -888,6 +912,10 @@ VISIBLE ELEMENTS (sample): {elements_summary}
 5. **wait**: Wait for UI to load
    {{"type": "wait", "params": {{"seconds": 1.5}}, "description": "Wait for page"}}
 
+6. **scroll**: Scroll content
+   {{"type": "scroll", "params": {{"direction": "down", "amount": 5}}, "description": "Scroll down"}}
+
+
 Output JSON:
 {{
     "actions": [...],
@@ -1022,9 +1050,14 @@ Generate actions:"""
                         })
                         return False  # Will trigger supervisor guidance
                 
-                # Log action start to replay system
+                # Capture screenshot BEFORE action for state representation
+                screenshot_path = None
                 if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
-                    self._replay_logger.log_action(action.description, action.action_type)
+                    screenshot_path = self._replay_logger.capture_screenshot()
+                
+                # Log action start to replay system with screenshot
+                if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
+                    self._replay_logger.log_action(action.description, action.action_type, screenshot_path=screenshot_path)
                 
                 # DEBUG: Log that we're about to execute
                 logger.debug(f"Executing action type: {action.action_type} with params: {action.params}")
@@ -1126,6 +1159,25 @@ Generate actions:"""
                         return False
                     self._smart_wait_after("click")
                 
+                elif action.action_type == "scroll":
+                    direction = action.params.get("direction", "down")
+                    amount = action.params.get("amount", 3)
+                    try:
+                        amount = int(amount)
+                    except:
+                        amount = 3
+                        
+                    if direction == "down":
+                        pyautogui.scroll(-amount)
+                    elif direction == "up":
+                        pyautogui.scroll(amount)
+                    elif direction == "left":
+                        pyautogui.hscroll(-amount)
+                    elif direction == "right":
+                        pyautogui.hscroll(amount)
+                        
+                    self._smart_wait_after("scroll")
+                
                 elif action.action_type == "open_url":
                     # RELIABLE URL opening using AppleScript - avoids typing issues
                     url = action.params.get("url", "")
@@ -1226,6 +1278,8 @@ Generate actions:"""
                 time.sleep(0.05)
             elif action_type == "click":
                 time.sleep(0.15)
+            elif action_type == "scroll":
+                time.sleep(0.3)
             else:
                 time.sleep(0.1)
     
