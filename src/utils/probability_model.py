@@ -780,8 +780,319 @@ class IntentPredictor:
 
 
 # ============================================================
-# ELEMENT AFFORDANCE SCORER (Practical World Awareness)
+# AMBIGUITY ANALYZER (Uncertainty Quantification)
 # ============================================================
+
+@dataclass
+class AmbiguityAnalysis:
+    """
+    Analysis of task ambiguity for dynamic threshold adjustment.
+    
+    This is used when the user's request is incomplete or ambiguous,
+    e.g., "click the first result" when multiple result types are visible.
+    """
+    ambiguity_score: float          # 0.0 = clear, 1.0 = highly ambiguous
+    specificity_score: float        # How specific is the task description?
+    target_count_estimate: int      # Estimated number of possible targets
+    needs_verification: bool        # Should we verify before executing?
+    disambiguation_hints: List[str] = field(default_factory=list)  # Hints for disambiguation
+    
+    # Dynamic thresholds based on ambiguity
+    recommended_match_threshold: float = 0.5   # Lower when ambiguous (more forgiving)
+    recommended_verification_level: str = "moderate"  # "light", "moderate", "strict"
+    
+    def to_dict(self) -> Dict:
+        return {
+            "ambiguity_score": round(self.ambiguity_score, 3),
+            "specificity_score": round(self.specificity_score, 3),
+            "target_count_estimate": self.target_count_estimate,
+            "needs_verification": self.needs_verification,
+            "disambiguation_hints": self.disambiguation_hints,
+            "recommended_match_threshold": round(self.recommended_match_threshold, 3),
+            "recommended_verification_level": self.recommended_verification_level,
+        }
+
+
+class AmbiguityAnalyzer:
+    """
+    Quantifies uncertainty when task description is ambiguous.
+    
+    Implements the "Task Probability Model" approach to handle incomplete requests:
+    
+    1. **Uncertainty Quantification**: Analyzes how specific the task description is
+       and estimates the probability of various intents.
+    
+    2. **Dynamic Thresholds**: When uncertainty is high, the system automatically:
+       - Lowers "match probability" threshold (more forgiving on matches)
+       - Increases "verification strictness" (more cautious before acting)
+    
+    Handles cases like:
+    - "click the first result" → which result type? How many results visible?
+    - "send a message" → to whom? what message?
+    - "download the file" → which file format? which button?
+    - "click the button" → which button among many?
+    """
+    
+    # Ambiguous patterns that need special handling
+    AMBIGUOUS_PATTERNS = {
+        # Ordinal references without clear context
+        'ordinal_without_type': [
+            r'\b(first|second|third|1st|2nd|3rd|last|next|previous)\b(?!\s+\w+)',
+            r'\b(first|second|third)\s+(one|item|thing)\b',
+        ],
+        # Vague target references
+        'vague_target': [
+            r'\bthe\s+(result|item|element|option|choice)\b',
+            r'\bclick\s+(it|that|this|here|there)\b',
+            r'\b(something|anything|whatever)\b',
+        ],
+        # Missing specific identifiers
+        'missing_identifier': [
+            r'\b(a|the)\s+button\b(?!\s+["\'])',  # "the button" without name
+            r'\b(a|the)\s+link\b(?!\s+["\'])',
+            r'\b(a|the)\s+field\b(?!\s+["\'])',
+        ],
+        # Actions without clear targets
+        'action_without_target': [
+            r'^(click|tap|press|select)$',  # Just action word
+            r'^(type|enter|write)\s+\w+$',  # Type without target
+        ],
+    }
+    
+    # Specific patterns that reduce ambiguity
+    SPECIFICITY_PATTERNS = {
+        'quoted_text': r'["\']([^"\']+)["\']',  # Quoted strings are specific
+        'exact_name': r'(called|named|titled|labeled)\s+["\']?\w+',
+        'specific_role': r'(button|link|menu|checkbox|radio|switch)\s+(named|called|labeled)',
+        'coordinate': r'at\s*\(?\d+\s*,\s*\d+\)?',  # Coordinates are very specific
+        'app_context': r'(in|on|using)\s+(safari|chrome|finder|whatsapp|youtube)',
+    }
+    
+    # Patterns that suggest multiple possible targets
+    MULTI_TARGET_INDICATORS = [
+        r'\b(any|one of|either|all)\b',
+        r'\b(first|second|third|last)\s+(visible|available|matching)\b',
+        r'\bresults?\b',
+        r'\bitems?\b',
+        r'\boptions?\b',
+    ]
+    
+    def __init__(self):
+        self._compiled_patterns = {}
+        self._compile_patterns()
+    
+    def _compile_patterns(self):
+        """Pre-compile regex patterns for efficiency."""
+        for category, patterns in self.AMBIGUOUS_PATTERNS.items():
+            self._compiled_patterns[category] = [
+                re.compile(p, re.IGNORECASE) for p in patterns
+            ]
+        
+        for name, pattern in self.SPECIFICITY_PATTERNS.items():
+            self._compiled_patterns[f"_spec_{name}"] = re.compile(pattern, re.IGNORECASE)
+        
+        self._compiled_patterns['_multi_target'] = [
+            re.compile(p, re.IGNORECASE) for p in self.MULTI_TARGET_INDICATORS
+        ]
+    
+    def analyze(self, task: str, context: Optional[Dict] = None,
+                candidate_count: int = 0) -> AmbiguityAnalysis:
+        """
+        Analyze a task description for ambiguity.
+        
+        Args:
+            task: The task description to analyze
+            context: Optional context (current app, screen state, etc.)
+            candidate_count: Number of candidates found by element search (0 if unknown)
+        
+        Returns:
+            AmbiguityAnalysis with scores and recommended thresholds
+        """
+        task_lower = task.lower().strip()
+        
+        # 1. Calculate specificity score (higher = more specific = less ambiguous)
+        specificity = self._calculate_specificity(task, context)
+        
+        # 2. Calculate ambiguity score from ambiguous patterns
+        pattern_ambiguity = self._calculate_pattern_ambiguity(task_lower)
+        
+        # 3. Estimate target count (how many things might match)
+        target_estimate = self._estimate_target_count(task_lower, candidate_count)
+        
+        # 4. Combine into overall ambiguity score
+        # High specificity reduces ambiguity, multiple targets increase it
+        base_ambiguity = (1.0 - specificity) * 0.5 + pattern_ambiguity * 0.5
+        
+        # Adjust for candidate count
+        if candidate_count > 5:
+            base_ambiguity += 0.15  # Many candidates = more ambiguous
+        elif candidate_count > 10:
+            base_ambiguity += 0.25
+        
+        ambiguity_score = max(0.0, min(1.0, base_ambiguity))
+        
+        # 5. Determine thresholds based on ambiguity
+        match_threshold, verification_level = self._calculate_thresholds(ambiguity_score)
+        
+        # 6. Generate disambiguation hints
+        hints = self._generate_hints(task, ambiguity_score)
+        
+        # 7. Determine if verification is needed
+        needs_verification = (
+            ambiguity_score > 0.4 or
+            target_estimate > 3 or
+            specificity < 0.5
+        )
+        
+        return AmbiguityAnalysis(
+            ambiguity_score=ambiguity_score,
+            specificity_score=specificity,
+            target_count_estimate=target_estimate,
+            needs_verification=needs_verification,
+            disambiguation_hints=hints,
+            recommended_match_threshold=match_threshold,
+            recommended_verification_level=verification_level,
+        )
+    
+    def _calculate_specificity(self, task: str, context: Optional[Dict]) -> float:
+        """Calculate how specific the task description is."""
+        score = 0.3  # Base score
+        
+        # Check for specificity patterns
+        for name, pattern in self.SPECIFICITY_PATTERNS.items():
+            compiled = self._compiled_patterns.get(f"_spec_{name}")
+            if compiled and compiled.search(task):
+                if name == 'quoted_text':
+                    score += 0.25  # Quoted text is very specific
+                elif name == 'coordinate':
+                    score += 0.35  # Coordinates are extremely specific
+                elif name == 'exact_name':
+                    score += 0.2
+                else:
+                    score += 0.15
+        
+        # Word count affects specificity (longer = usually more specific)
+        word_count = len(task.split())
+        if word_count > 10:
+            score += 0.1
+        elif word_count < 4:
+            score -= 0.1
+        
+        # Context availability helps reduce ambiguity
+        if context:
+            if context.get('current_app'):
+                score += 0.1
+            if context.get('recent_action'):
+                score += 0.05
+        
+        return max(0.0, min(1.0, score))
+    
+    def _calculate_pattern_ambiguity(self, task_lower: str) -> float:
+        """Calculate ambiguity from pattern matching."""
+        ambiguity = 0.0
+        
+        # Check each category of ambiguous patterns
+        weights = {
+            'ordinal_without_type': 0.25,
+            'vague_target': 0.3,
+            'missing_identifier': 0.2,
+            'action_without_target': 0.35,
+        }
+        
+        for category, patterns in self._compiled_patterns.items():
+            if category.startswith('_'):
+                continue  # Skip non-ambiguity patterns
+            
+            if isinstance(patterns, list):
+                for pattern in patterns:
+                    if pattern.search(task_lower):
+                        ambiguity += weights.get(category, 0.1)
+                        break  # Only count each category once
+        
+        return min(1.0, ambiguity)
+    
+    def _estimate_target_count(self, task_lower: str, candidate_count: int) -> int:
+        """Estimate how many elements might match the task."""
+        if candidate_count > 0:
+            return candidate_count  # Use actual count if available
+        
+        # Heuristic estimation based on task description
+        estimate = 1  # Default: 1 target
+        
+        # Check for multi-target indicators
+        for pattern in self._compiled_patterns.get('_multi_target', []):
+            if pattern.search(task_lower):
+                estimate = 3  # Likely multiple targets
+                break
+        
+        # Ordinal references suggest at least that many exist
+        if 'first' in task_lower or '1st' in task_lower:
+            estimate = max(estimate, 2)
+        elif 'second' in task_lower or '2nd' in task_lower:
+            estimate = max(estimate, 3)
+        elif 'third' in task_lower or '3rd' in task_lower:
+            estimate = max(estimate, 4)
+        elif 'last' in task_lower:
+            estimate = max(estimate, 3)
+        
+        return estimate
+    
+    def _calculate_thresholds(self, ambiguity_score: float) -> Tuple[float, str]:
+        """
+        Calculate dynamic thresholds based on ambiguity.
+        
+        Key insight: When uncertainty is HIGH, we should:
+        - LOWER the match probability threshold (be more forgiving)
+        - INCREASE the verification strictness (be more cautious)
+        
+        This allows us to proceed with uncertain matches but verify more carefully.
+        """
+        # Match threshold: inversely related to ambiguity
+        # High ambiguity (0.8) → low threshold (0.35) - more forgiving
+        # Low ambiguity (0.2) → high threshold (0.70) - more strict
+        match_threshold = 0.75 - (ambiguity_score * 0.45)
+        match_threshold = max(0.30, min(0.75, match_threshold))
+        
+        # Verification level: directly related to ambiguity
+        if ambiguity_score > 0.6:
+            verification_level = "strict"
+        elif ambiguity_score > 0.35:
+            verification_level = "moderate"
+        else:
+            verification_level = "light"
+        
+        return match_threshold, verification_level
+    
+    def _generate_hints(self, task: str, ambiguity_score: float) -> List[str]:
+        """Generate hints for disambiguation when ambiguity is high."""
+        hints = []
+        
+        if ambiguity_score < 0.3:
+            return hints  # No hints needed for clear tasks
+        
+        task_lower = task.lower()
+        
+        # Check for specific ambiguity types and suggest hints
+        if re.search(r'\b(first|second|third|last)\b', task_lower):
+            if not re.search(r'(button|link|result|video|item|option)', task_lower):
+                hints.append("Specify target type (e.g., 'first video result', 'first link')")
+        
+        if re.search(r'\bthe\s+(result|item|element)\b', task_lower):
+            hints.append("Specify which result by adding identifiers (e.g., 'result with title X')")
+        
+        if re.search(r'\bclick\s+(it|that|this)\b', task_lower):
+            hints.append("Clarify the target reference with specific element description")
+        
+        if 'button' in task_lower and not re.search(r'button\s*["\']', task_lower):
+            hints.append("Specify button text (e.g., 'click the \"Submit\" button')")
+        
+        if ambiguity_score > 0.6 and not hints:
+            hints.append("Consider providing more context or element identifiers")
+        
+        return hints
+
+
+
 
 @dataclass
 class ElementAffordanceScore:
@@ -894,6 +1205,9 @@ class TaskProbabilityModel:
         self.intent_predictor = IntentPredictor()
         self.affordance_scorer = ElementAffordanceScorer()
         
+        # NEW: Ambiguity analyzer for dynamic threshold adjustment
+        self.ambiguity_analyzer = AmbiguityAnalyzer()
+        
         # Feedback learning
         self.feedback_path = self.data_dir / "probability_feedback.json"
         self.feedback: List[Dict] = self._load_feedback()
@@ -930,36 +1244,70 @@ class TaskProbabilityModel:
         
         return flexibility
     
-    def get_execution_params(self, task: str, context: Optional[Dict] = None) -> Dict:
+    def get_execution_params(self, task: str, context: Optional[Dict] = None,
+                             candidate_count: int = 0) -> Dict:
         """
         Get execution parameters based on probability analysis.
+        
+        Uses the Task Probability Model to handle ambiguous requests:
+        1. Uncertainty Quantification - analyzes specificity and estimates intent probability
+        2. Dynamic Thresholds - adjusts match/verification based on uncertainty
         
         Returns a dict that can be passed to executor with:
         - min_match_probability: threshold for element matching
         - verification_strictness: how strict to verify actions
         - fallback_chain: ordered list of fallback strategies
         - exploration_enabled: whether to try alternatives
+        - ambiguity_analysis: detailed ambiguity info
+        
+        Args:
+            task: Task description
+            context: Current execution context
+            candidate_count: Number of UI candidates found (0 if unknown)
         """
         flexibility = self.analyze(task, context)
         
-        # Calculate dynamic thresholds based on uncertainty
+        # NEW: Run ambiguity analysis for dynamic threshold adjustment
+        ambiguity = self.ambiguity_analyzer.analyze(task, context, candidate_count)
+        
+        # Calculate dynamic thresholds based on BOTH uncertainty and ambiguity
         uncertainty = flexibility.overall_uncertainty
         completeness = flexibility.task_completeness.overall_score
         
-        # Higher uncertainty → lower match probability threshold (more forgiving)
-        # But also need more verification
-        if uncertainty > 0.6:
-            min_match = 0.4
-            verification = "strict"
+        # Combine uncertainty signals:
+        # - Overall uncertainty from flexibility analysis
+        # - Ambiguity score from specific pattern analysis
+        combined_uncertainty = 0.5 * uncertainty + 0.5 * ambiguity.ambiguity_score
+        
+        # Dynamic threshold adjustment based on ambiguity
+        # When ambiguity is HIGH:
+        #   - LOWER match probability threshold (more forgiving on matches)
+        #   - INCREASE verification strictness (more cautious before acting)
+        min_match = ambiguity.recommended_match_threshold
+        verification = ambiguity.recommended_verification_level
+        
+        # Adjust based on combined uncertainty
+        if combined_uncertainty > 0.6:
+            min_match = min(min_match, 0.4)  # More forgiving
+            verification = "strict"  # But more cautious
             exploration = True
-        elif uncertainty > 0.3:
-            min_match = 0.55
-            verification = "moderate"
+        elif combined_uncertainty > 0.3:
+            min_match = min(min_match, 0.55)
+            if verification == "light":
+                verification = "moderate"
             exploration = True
         else:
-            min_match = 0.7
-            verification = "light"
+            # Low uncertainty - can be more strict on matching
+            min_match = max(min_match, 0.65)
             exploration = False
+        
+        # Log ambiguity analysis
+        if ambiguity.ambiguity_score > 0.3:
+            logger.debug(f"  ⚠️ Ambiguity detected: {ambiguity.ambiguity_score:.2f}")
+            logger.debug(f"     Specificity: {ambiguity.specificity_score:.2f}")
+            logger.debug(f"     Target estimate: {ambiguity.target_count_estimate}")
+            if ambiguity.disambiguation_hints:
+                logger.debug(f"     Hints: {ambiguity.disambiguation_hints}")
         
         return {
             'min_match_probability': min_match,
@@ -969,7 +1317,11 @@ class TaskProbabilityModel:
             'execution_strategy': flexibility.macro_micro.execution_strategy,
             'predicted_info': flexibility.task_completeness.predicted_info,
             'primary_intent': flexibility.intent.primary_intent,
-            'confidence': 1.0 - uncertainty,
+            'confidence': 1.0 - combined_uncertainty,
+            # NEW: Include ambiguity analysis for downstream consumers
+            'ambiguity_analysis': ambiguity.to_dict(),
+            'needs_verification': ambiguity.needs_verification,
+            'disambiguation_hints': ambiguity.disambiguation_hints,
         }
     
     def record_feedback(self, task: str, success: bool, 
@@ -1028,6 +1380,27 @@ def analyze_task_flexibility(task: str, context: Optional[Dict] = None) -> Execu
     return get_probability_model().analyze(task, context)
 
 
-def get_flexible_execution_params(task: str, context: Optional[Dict] = None) -> Dict:
-    """Get execution parameters with flexibility adjustments."""
-    return get_probability_model().get_execution_params(task, context)
+def get_flexible_execution_params(task: str, context: Optional[Dict] = None,
+                                   candidate_count: int = 0) -> Dict:
+    """Get execution parameters with flexibility adjustments and ambiguity analysis."""
+    return get_probability_model().get_execution_params(task, context, candidate_count)
+
+
+def analyze_task_ambiguity(task: str, context: Optional[Dict] = None,
+                           candidate_count: int = 0) -> AmbiguityAnalysis:
+    """
+    Quick access to task ambiguity analysis.
+    
+    Use this to understand how ambiguous a task description is
+    and get recommended thresholds for matching and verification.
+    
+    Args:
+        task: The task description to analyze
+        context: Optional execution context
+        candidate_count: Number of UI candidates found (0 if unknown)
+    
+    Returns:
+        AmbiguityAnalysis with scores and recommendations
+    """
+    return get_probability_model().ambiguity_analyzer.analyze(task, context, candidate_count)
+
