@@ -360,6 +360,149 @@ These require screen analysis and must be executed individually:
 - Only verify when high stakes or new context
 - Bias toward "what worked before"
 
+## ⚠️ CRITICAL: Scroll-First Planning & Element Disambiguation
+
+### ⚠️ SUPER CRITICAL: Browser UI vs Website Content
+
+**THE #1 MISTAKE: Searching in the BROWSER'S address bar instead of the WEBSITE's search field!**
+
+When planning "search on website" or "use site's search bar":
+- **DO NOT** use Cmd+L → This focuses the BROWSER's URL bar (Google search)
+- **DO** use vision-based click on the WEBSITE's search input field
+
+**The Difference:**
+```
+Browser URL bar (y < 90px):
+  - Typing here searches GOOGLE, not the website
+  - This is BROWSER chrome, not website content
+  - ❌ WRONG for "search on uhdmovies.earth"
+
+Website search field (y > 100px):  
+  - This searches WITHIN the website
+  - This is WEBSITE content
+  - ✅ CORRECT for "search on uhdmovies.earth"
+```
+
+**Correct Pattern for "Locate and use site's search bar":**
+```json
+{
+  "type": "vision",
+  "description": "Click website's search field (NOT browser URL bar)",
+  "action": "Find and click the search input field INSIDE the website content (y > 100px). Look for a search icon (🔍) or text box with placeholder like 'Search...'. DO NOT click the browser's address bar at the top (y < 90px)."
+}
+```
+
+### When to Plan Scroll Actions
+
+**Recognize scroll-required scenarios:**
+- User mentions: "scroll down", "find below", "at the bottom", "quality list"
+- Task involves: download pages, long articles, product pages, search results
+- Content type: Lists of options, detailed specifications, download links
+
+**DO NOT assume content is immediately visible. Plan scroll actions when:**
+1. User explicitly mentions scrolling or content "below"
+2. Website type typically has content below the fold (download sites, product pages)
+3. Task requires finding specific items in a list (quality options, download links)
+
+### Element Zone Awareness
+
+**Plan with page zones in mind:**
+
+```
+┌─────────────────────────────────────┐
+│  HEADER/NAV ZONE (sticky/fixed)    │ ← Category links, site navigation
+│  Logo | Nav | Search | Categories   │    NOT task-specific content
+├─────────────────────────────────────┤
+│                                     │
+│  CONTENT ZONE (scrollable)          │ ← Actual content, download links
+│  Main article, product info,        │    Task-specific elements HERE
+│  download buttons, quality options   │
+│                                     │
+├─────────────────────────────────────┤
+│  FOOTER ZONE                        │ ← Copyright, policies
+└─────────────────────────────────────┘
+```
+
+### Anti-Hallucination Planning Rules
+
+**When planning vision actions, be specific about location:**
+
+❌ **WRONG (ambiguous):**
+```json
+{"type": "vision", "action": "click 1080p download"}
+```
+
+✅ **RIGHT (location-aware):**
+```json
+{"type": "vision", "action": "scroll down past movie info, then click the 1080p download button in the main content area (NOT the header category links)"}
+```
+
+### Download Site Pattern (Movie, Software, etc.)
+
+**Typical structure:**
+1. Header: Site navigation with quality categories (1080p, 4K, etc.) - THESE ARE FILTERS, NOT DOWNLOADS
+2. Content top: Title, poster, description, trailer
+3. Content middle: Synopsis, cast, technical info
+4. Content bottom: **ACTUAL DOWNLOAD LINKS** with quality options and file sizes
+
+**Correct planning approach:**
+
+```json
+[
+  {
+    "type": "blind",
+    "description": "Navigate to movie page",
+    "actions": ["hotkey:command,l", "type:movie-site.com/movie-title", "key:return", "wait:3"]
+  },
+  {
+    "type": "blind",
+    "description": "Scroll down to download section (past movie info)",
+    "actions": ["key:pagedown", "wait:0.5", "key:pagedown", "wait:0.5", "key:pagedown"]
+  },
+  {
+    "type": "vision",
+    "description": "Find and click highest quality download in CONTENT area",
+    "action": "locate the download links section in the main content (look for buttons with file sizes like '21.19 GB' or 'Download G-Drive'), click the highest quality option. IGNORE header navigation links."
+  }
+]
+```
+
+### Scroll Planning Patterns
+
+**Pattern: Content Below the Fold**
+```json
+{
+  "type": "blind",
+  "description": "Scroll to reveal hidden content",
+  "actions": ["key:pagedown", "wait:0.5", "key:pagedown", "wait:0.5"]
+}
+```
+
+**Pattern: Scroll Until Target Found (requires vision)**
+```json
+[
+  {
+    "type": "blind", 
+    "description": "Initial scroll",
+    "actions": ["key:pagedown", "key:pagedown", "wait:1"]
+  },
+  {
+    "type": "vision",
+    "description": "Check if target content visible, scroll more if needed",
+    "action": "look for download quality options section. If not visible, scroll down more."
+  }
+]
+```
+
+**Pattern: Precise Element Location**
+```json
+{
+  "type": "vision",
+  "description": "Click element with explicit zone awareness",
+  "action": "In the MAIN CONTENT AREA (not header), find and click [target element]. The element should have [contextual details like file size, format info]. Skip any matching text in the sticky header or navigation."
+}
+```
+
 ## Employee Task Behavioral Patterns
 
 ### Morning Routine Pattern (8-9 AM)

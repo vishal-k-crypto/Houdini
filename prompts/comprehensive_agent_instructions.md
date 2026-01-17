@@ -372,6 +372,7 @@ Vision actions are 10-100x slower than blind actions because they require:
 - Tab/arrow key navigation
 - Copy/paste operations
 - Window management (Cmd+Tab, Cmd+`, etc.)
+- **Scrolling via keyboard** (Page Down, Arrow keys, Space)
 
 #### 4.2.2 When Vision is Required
 
@@ -382,8 +383,57 @@ Vision actions are 10-100x slower than blind actions because they require:
 - Handling unexpected UI states
 - Selecting from visual grids (thumbnails, icons)
 - Filling complex forms with unknown structure
+- **Distinguishing between header/nav elements and content elements**
+- **Verifying correct element zone before clicking**
 
-#### 4.2.3 Hybrid Strategies (Advanced)
+### 4.2.3 ⚠️ CRITICAL: Element Zone Disambiguation
+
+**The Header vs Content Problem:**
+
+Many websites have similar text in multiple locations:
+- **Header/Navigation**: Category filters, quick links (e.g., "1080p", "4K HDR")
+- **Content Area**: Actual functional elements (e.g., download buttons with quality labels)
+
+**NEVER assume the first matching text is the correct element!**
+
+**Page Zone Model:**
+```
+┌─────────────────────────────────────────┐
+│  ZONE 1: HEADER (y: 0-150px typically)  │
+│  - Site logo, navigation menu           │
+│  - Category links (these are FILTERS!)  │
+│  - Search bar, user menu                │
+│  - Often STICKY/FIXED position          │
+├─────────────────────────────────────────┤
+│  ZONE 2: CONTENT (main scrollable area) │
+│  - Article/product content              │
+│  - Download buttons with file sizes     │
+│  - Forms, interactive elements          │
+│  - THIS IS WHERE TASK TARGETS LIVE      │
+├─────────────────────────────────────────┤
+│  ZONE 3: SIDEBAR (if present)           │
+│  - Ads, related content                 │
+│  - Usually NOT what user wants          │
+├─────────────────────────────────────────┤
+│  ZONE 4: FOOTER                         │
+│  - Copyright, policies, site links      │
+└─────────────────────────────────────────┘
+```
+
+**Vision Action Disambiguation Rules:**
+1. When looking for content items, **SKIP header/nav zone elements**
+2. When task mentions "scroll down", content is NOT in the header
+3. Prefer elements with **contextual information** (file sizes, descriptions)
+4. Be suspicious of **sticky/fixed position** elements - likely navigation
+5. Actual download buttons have **action text** ("Download", "Get") not just quality labels
+
+**Example - Download Site Disambiguation:**
+```
+WRONG: Click "1080p 10Bit" in header → This navigates to a category page
+RIGHT: Click "Download (G-Drive)" button next to 1080p quality info → Actual download
+```
+
+#### 4.2.4 Hybrid Strategies (Advanced)
 
 **Strategy: Blind Navigation + Minimal Vision Verification**
 ```
@@ -1291,6 +1341,137 @@ Effective prompts that generate images:
 ```
 
 ## Section 9: Learning and Adaptation
+
+### 9.0 ⚠️ ANTI-HALLUCINATION PATTERNS: Common Website Mistakes
+
+**These are the most common mistakes that lead to wrong element clicks:**
+
+#### 9.0.1 Download Sites (Movie/Software/File Downloads)
+
+**The Problem:**
+- Header has quality categories: "1080p", "4K HDR", "2160p", etc.
+- Content has actual download buttons with same labels
+- AI clicks header → goes to category page instead of downloading
+
+**The Pattern to Avoid:**
+```
+❌ WRONG: See "1080p 10Bit" in header → Click it → Goes to category page
+❌ WRONG: First match for "quality options" is in header → Wrong target!
+```
+
+**The Correct Pattern:**
+```json
+{
+  "pattern_id": "download_site_quality_selection",
+  "description": "Find and click download link on movie/file download site",
+  "batches": [
+    {
+      "type": "blind",
+      "description": "Scroll down past header and movie info to download section",
+      "actions": [
+        "key:pagedown",
+        "wait:0.5",
+        "key:pagedown", 
+        "wait:0.5",
+        "key:pagedown",
+        "wait:0.5"
+      ],
+      "reasoning": "Download links are ALWAYS below movie poster, description, and trailer"
+    },
+    {
+      "type": "vision",
+      "description": "Find download button in CONTENT zone",
+      "action": "In the MAIN CONTENT AREA (NOT the header), find the download button. Look for buttons with text like 'Download (G-Drive)', 'Download (Direct)', or buttons next to file size info (e.g., '21.19 GB'). IGNORE any quality labels in the sticky header or navigation.",
+      "zone_preference": "content"
+    }
+  ],
+  "common_mistakes": [
+    "Clicking header category links like '1080p 10Bit'",
+    "Clicking before scrolling down",
+    "Clicking quality filter instead of download button"
+  ],
+  "success_indicators": [
+    "Clicked button has file size nearby",
+    "Clicked button says 'Download' not just quality name",
+    "Element was NOT in top 150px of screen"
+  ]
+}
+```
+
+#### 9.0.2 E-commerce Sites (Product Pages)
+
+**The Problem:**
+- Header has category links: "Electronics", "Computers", etc.
+- Sidebar has filters: "Price", "Brand", etc.
+- Content has actual "Add to Cart" button
+
+**Correct Pattern:**
+```json
+{
+  "pattern_id": "ecommerce_add_to_cart",
+  "batches": [
+    {
+      "type": "vision",
+      "description": "Find Add to Cart in product content area",
+      "action": "Find the 'Add to Cart' or 'Buy Now' button in the MAIN PRODUCT AREA (usually center or right of page, near price). SKIP any navigation links or category filters.",
+      "zone_preference": "content"
+    }
+  ]
+}
+```
+
+#### 9.0.3 Search Results Pages
+
+**The Problem:**
+- Multiple "search" elements: search box, filter buttons, result links
+- AI might click wrong search element
+
+**Correct Pattern:**
+```json
+{
+  "pattern_id": "search_results_click",
+  "batches": [
+    {
+      "type": "vision",
+      "description": "Click specific search result in results list",
+      "action": "In the SEARCH RESULTS AREA (main content, not sidebar ads), click the [first/specific] result. Results are usually in a list format with title, URL, and description. SKIP sponsored ads and sidebar content.",
+      "zone_preference": "content"
+    }
+  ]
+}
+```
+
+#### 9.0.4 Video Streaming Sites
+
+**The Problem:**
+- Navigation has genre categories
+- Multiple video thumbnails (featured, trending, recommended)
+- Need to click specific content, not navigation
+
+**Correct Pattern:**
+```json
+{
+  "pattern_id": "video_site_watch",
+  "batches": [
+    {
+      "type": "vision",
+      "description": "Click video in content grid",
+      "action": "Find the video thumbnail in the MAIN CONTENT GRID (not sidebar, not header categories). Look for the specific video title or the first item in the main video grid.",
+      "zone_preference": "content"
+    }
+  ]
+}
+```
+
+### 9.0.5 General Anti-Hallucination Checklist
+
+Before clicking ANY element on a website, verify:
+
+✅ **Zone Check**: Is element in content area (y > 150px) or header?
+✅ **Context Check**: Does element have contextual info (sizes, descriptions)?
+✅ **Scroll Check**: Did task mention scrolling? If yes, scroll first!
+✅ **Action Text Check**: Does element have action text ("Download", "Add", "Submit") or just label?
+✅ **Sticky Check**: Is element position fixed/sticky? Probably navigation!
 
 ### 9.1 Memory System Integration
 
