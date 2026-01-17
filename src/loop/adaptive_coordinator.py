@@ -394,6 +394,23 @@ class AdaptiveLoopCoordinator:
                                 self.state.step_attempt_count = 0
                                 continue
                     
+                # NEW: Handle adaptive re-planning when screen is unexpected
+                if step_result.get("needs_replan") and step_result.get("new_steps"):
+                    new_steps = step_result["new_steps"]
+                    logger.info(f"🔄 Inserting {len(new_steps)} recovery steps from re-plan")
+                    self._show("planner", f"🔄 Re-plan: inserting {len(new_steps)} recovery steps", "thinking")
+                    
+                    # Insert new steps immediately after current position
+                    insert_pos = self.state.current_macro_step_idx + 1
+                    for i, step in enumerate(new_steps):
+                        self.state.macro_plan.macro_steps.insert(insert_pos + i, step)
+                    
+                    # Mark current step as complete and continue to recovery steps
+                    self._show("executor", f"✅ Step {self.state.current_macro_step_idx + 1} complete (re-planning)", "success")
+                    self.state.current_macro_step_idx += 1
+                    self.state.step_attempt_count = 0
+                    continue
+                
                 if step_result.get("complete"):
                     self._show("executor", f"✅ Step {self.state.current_macro_step_idx + 1} complete", "success")
                     self.state.current_macro_step_idx += 1
