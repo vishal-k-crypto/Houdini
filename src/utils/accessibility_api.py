@@ -131,16 +131,18 @@ class AccessibilityAPI:
     
     def _convert_coords_to_screen(self, macos_x: float, macos_y: float) -> Tuple[int, int]:
         """
-        Convert macOS AXPosition coordinates to screen coordinates.
+        Convert macOS AXPosition coordinates to PyAutoGUI screen coordinates.
         
-        IMPORTANT: AXPosition values from Accessibility API are already in
-        screen coordinates with (0,0) at TOP-LEFT corner. No conversion needed.
+        macOS Accessibility API: Origin at BOTTOM-LEFT of screen (y increases upward)
+        PyAutoGUI: Origin at TOP-LEFT of screen (y increases downward)
         
-        The common misconception is that macOS uses bottom-left origin, but
-        that's only for Quartz/Core Graphics drawing, NOT for Accessibility API.
+        Formula: PyAutoGUI_Y = Screen_Height - macOS_Y
+        
+        This conversion is CRITICAL for accurate click targeting!
         """
-        # AXPosition is already in screen coords (top-left origin)
-        return (int(macos_x), int(macos_y))
+        # Flip Y coordinate: macOS uses bottom-left origin, PyAutoGUI uses top-left
+        pyautogui_y = self._screen_height - int(macos_y)
+        return (int(macos_x), pyautogui_y)
     
     def _get_attribute(self, element: Any, attribute: str) -> Optional[Any]:
         """Safely get an attribute from an AXUIElement."""
@@ -428,13 +430,16 @@ class AccessibilityAPI:
         Get the UI element at specific screen coordinates.
         
         Args:
-            x, y: Screen coordinates (top-left origin)
+            x, y: Screen coordinates in PyAutoGUI format (top-left origin)
             
         Returns:
             AXElement at that position or None
+            
+        Note: Internally converts to macOS bottom-left origin for API call.
         """
         try:
-            # Convert to macOS coordinates
+            # Convert from PyAutoGUI coords (top-left origin) to macOS coords (bottom-left origin)
+            # Formula: macOS_Y = Screen_Height - PyAutoGUI_Y
             macos_y = self._screen_height - y
             
             system_wide = AXUIElementCreateSystemWide()

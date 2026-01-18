@@ -6,6 +6,11 @@ import json
 import time
 from typing import Optional, List, Dict
 from .logging import logger
+try:
+    from ..replay.execution_logger import log_llm_interaction
+except ImportError:
+    # Fallback if logger not available
+    def log_llm_interaction(*args, **kwargs): pass
 
 
 class OllamaClient:
@@ -142,6 +147,16 @@ class OllamaClient:
                     
                     if output:
                         logger.debug(f"Ollama ({model_to_use}) response time: {duration:.1f}s")
+                        
+                        # Log to execution logger for training data
+                        log_llm_interaction(
+                            component="ollama_client",
+                            prompt=full_prompt if 'full_prompt' in locals() else (payload.get('system', '') + "\n\n" + prompt),
+                            response=output,
+                            model=model_to_use,
+                            duration_ms=duration * 1000
+                        )
+                        
                         return output
                     else:
                         logger.warning("Empty response from Ollama")

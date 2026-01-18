@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     git \
+    openbox \
     fonts-liberation \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -38,25 +39,21 @@ ENV SCREEN_WIDTH=1920
 ENV SCREEN_HEIGHT=1080
 ENV SCREEN_DEPTH=24
 
-# Install Python dependencies
+# Install Python dependencies (use docker-specific requirements without macOS packages)
 WORKDIR /app
-COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+COPY requirements-docker.txt .
+RUN pip3 install --no-cache-dir -r requirements-docker.txt
 
-# Install additional packages for automation
-RUN pip3 install --no-cache-dir \
-    redis \
-    fake-useragent \
-    requests \
-    beautifulsoup4
+# Install additional automation packages
+RUN pip3 install --no-cache-dir redis fake-useragent requests beautifulsoup4 rich textual
 
 # Copy application code
 COPY . /app/
 
-# Create data directories
-RUN mkdir -p /app/data/screenshots /app/data/replay_sessions
+# Create data directories (including training_sessions for excellent quality data)
+RUN mkdir -p /app/data/screenshots /app/data/replay_sessions /app/data/training_sessions
 
-# Create entrypoint script
+# Copy and set entrypoint
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

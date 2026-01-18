@@ -44,9 +44,6 @@ class EventType(str, Enum):
     THINKING_SUPERVISOR = "thinking_supervisor"
     THINKING_SYSTEM = "thinking_system"
     
-    # Plan events
-    PLAN_GENERATED = "plan_generated"
-    
     # Action events
     ACTION_START = "action_start"
     ACTION_COMPLETE = "action_complete"
@@ -76,6 +73,10 @@ class EventType(str, Enum):
     KEY_PRESS = "key_press"
     KEY_HOTKEY = "key_hotkey"
     TEXT_TYPE = "text_type"
+    
+    # LLM events (for training)
+    LLM_PROMPT = "llm_prompt"
+    LLM_RESPONSE = "llm_response"
 
 
 @dataclass
@@ -184,6 +185,9 @@ class ExecutionLogger:
         self.sessions_dir = Path(__file__).parent.parent.parent / "data" / "replay_sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         
+        self.training_dir = Path(__file__).parent.parent.parent / "data" / "training_sessions"
+        self.training_dir.mkdir(parents=True, exist_ok=True)
+        
         self.current_session: Optional[ExecutionSession] = None
         self.session_start_time_ms: int = 0
         self.cursor_tracking = False
@@ -207,9 +211,13 @@ class ExecutionLogger:
         self._initialized = True
     
     def start_session(self, task_id: str, task_description: str, 
-                      metadata: Optional[Dict] = None) -> ExecutionSession:
+                      metadata: Optional[Dict] = None, is_training: bool = False) -> ExecutionSession:
         """Start a new execution session with live recording."""
         self.session_start_time_ms = int(time.time() * 1000)
+        
+        # Add is_training to metadata
+        metadata = metadata or {}
+        metadata["is_training"] = is_training
         
         self.current_session = ExecutionSession(
             task_id=task_id,
@@ -240,17 +248,14 @@ class ExecutionLogger:
         # Stop cursor tracking
         self._stop_cursor_tracking()
         
-        # Capture final screenshot to show end state
-        final_screenshot = self.capture_screenshot()
-        
-        # Log task completion with final screenshot
+        # Log task completion
         event_type = EventType.TASK_COMPLETE if success else EventType.TASK_FAILED
         self.log_event(event_type, {
             "success": success,
             "error": error,
             "duration_ms": self.current_session.duration_ms(),
             "event_count": len(self.current_session.events),
-        }, screenshot_path=final_screenshot)
+        })
         
         self.current_session.completed_at = datetime.now().isoformat()
         self.current_session.success = success
@@ -320,40 +325,24 @@ class ExecutionLogger:
             "level": level,
         })
     
-    def log_plan_generated(self, plan: Dict[str, Any]):
-        """Log a generated macro plan."""
-        self.log_event(EventType.PLAN_GENERATED, {
-            "plan": plan
-        })
-    
     def log_action(self, action: str, action_type: str = "blind", 
-                   screenshot_path: Optional[str] = None,
-                   state: Optional[Dict] = None):
-        """Log action start with optional state snapshot."""
-        data = {
+                   screenshot_path: Optional[str] = None):
+        """Log action start with optional pre-action screenshot."""
+        self.log_event(EventType.ACTION_START, {
             "action": action,
             "action_type": action_type,
-        }
-        if state:
-            data["state"] = state
-            
-        self.log_event(EventType.ACTION_START, data, screenshot_path=screenshot_path)
+        }, screenshot_path=screenshot_path)
     
     def log_action_complete(self, action: str, success: bool, 
-                           duration_ms: float, error: Optional[str] = None,
-                           details: Optional[Dict] = None):
+                           duration_ms: float, error: Optional[str] = None):
         """Log action completion."""
         event_type = EventType.ACTION_COMPLETE if success else EventType.ACTION_FAILED
-        data = {
+        self.log_event(event_type, {
             "action": action,
             "success": success,
             "duration_ms": duration_ms,
             "error": error,
-        }
-        if details:
-            data["details"] = details
-            
-        self.log_event(event_type, data)
+        })
     
     def log_batch_start(self, batch_idx: int, batch_type: str, description: str):
         """Log batch execution start."""
@@ -403,39 +392,22 @@ class ExecutionLogger:
     def log_text_type(self, text: str):
         """Log text typing."""
         self.log_event(EventType.TEXT_TYPE, {"text": text})
-    
-    def capture_screenshot(self) -> Optional[str]:
-        """
-        Capture a screenshot and return the path.
-        Does not log an event.
-        """
-        if not PYAUTOGUI_AVAILABLE or not self.current_session:
-            return None
-            
-        try:
-            import subprocess
-            
-            # Create screenshots directory
-            screenshots_dir = self.sessions_dir.parent / "screenshots"
-            screenshots_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Generate filename with timestamp
-            timestamp = int(time.time() * 1000)
-            filename = f"{self.current_session.task_id}_{timestamp}.png"
-            filepath = screenshots_dir / filename
-            
-            # Capture screen using macOS screencapture (fast and reliable)
-            result = subprocess.run(
-                ["screencapture", "-x", "-C", str(filepath)],
-                capture_output=True, timeout=5
-            )
-            
-            if result.returncode == 0 and filepath.exists():
-                return str(filepath)
-        except Exception:
-            pass
-        return None
 
+    def log_llm_interaction(self, component: str, prompt: str, response: str, model: str, duration_ms: float = 0):
+        """Log LLM prompt and response for training data."""
+        self.log_event(EventType.LLM_PROMPT, {
+            "component": component,
+            "prompt": prompt,
+            "model": model
+        })
+        
+        self.log_event(EventType.LLM_RESPONSE, {
+            "component": component,
+            "response": response,
+            "model": model,
+            "duration_ms": duration_ms
+        })
+    
     def log_screenshot_auto(self, trigger: str = "checkpoint", description: str = "") -> Optional[str]:
         """
         Automatically capture and log a screenshot.
@@ -447,16 +419,44 @@ class ExecutionLogger:
         Returns:
             Path to saved screenshot, or None if capture failed
         """
-        screenshot_path = self.capture_screenshot()
+        if not PYAUTOGUI_AVAILABLE:
+            return None
         
-        if screenshot_path:
-            # Log the screenshot event
-            self.log_event(EventType.SCREENSHOT, {
-                "trigger": trigger,
-                "description": description or f"Auto-captured on {trigger}",
-            }, screenshot_path=screenshot_path)
+        if not self.current_session:
+            return None
+        
+        try:
+            import subprocess
+            import tempfile
             
-        return screenshot_path
+            # Create screenshots directory
+            screenshots_dir = self.sessions_dir.parent / "screenshots"
+            screenshots_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate filename with timestamp and trigger
+            timestamp = int(time.time() * 1000)
+            safe_trigger = "".join(c if c.isalnum() else "_" for c in trigger[:20])
+            filename = f"{self.current_session.task_id}_{timestamp}_{safe_trigger}.png"
+            filepath = screenshots_dir / filename
+            
+            # Capture screen using macOS screencapture (fast and reliable)
+            result = subprocess.run(
+                ["screencapture", "-x", "-C", str(filepath)],
+                capture_output=True, timeout=5
+            )
+            
+            if result.returncode == 0 and filepath.exists():
+                # Log the screenshot event
+                self.log_event(EventType.SCREENSHOT, {
+                    "trigger": trigger,
+                    "description": description or f"Auto-captured on {trigger}",
+                }, screenshot_path=str(filepath))
+                
+                return str(filepath)
+        except Exception:
+            pass
+        
+        return None
     
     def _start_cursor_tracking(self):
         """Start background cursor position tracking."""
@@ -498,7 +498,12 @@ class ExecutionLogger:
             return
         
         filename = f"{self.current_session.task_id}_{self.current_session.started_at.replace(':', '-').replace('.', '-')}.json"
-        filepath = self.sessions_dir / filename
+        
+        # Determine output directory based on metadata
+        is_training = self.current_session.metadata.get("is_training", False)
+        output_dir = self.training_dir if is_training else self.sessions_dir
+        
+        filepath = output_dir / filename
         
         with open(filepath, 'w') as f:
             json.dump(self.current_session.to_dict(), f, indent=2)
@@ -525,6 +530,11 @@ class ExecutionLogger:
             if filepath.stem.startswith(task_id):
                 return self._recover_live_session(filepath)
         
+        # Check training sessions too
+        for filepath in self.training_dir.glob("*.json"):
+            if filepath.name.startswith(task_id):
+                return self.load_session(filepath)
+        
         return None
     
     # ========== LIVE RECORDING METHODS (Interrupt-Safe) ==========
@@ -535,8 +545,14 @@ class ExecutionLogger:
             try:
                 # Create live file path
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"{task_id}_{timestamp}.live.jsonl"
-                self._live_filepath = self.sessions_dir / filename
+                
+                # Determine output directory based on metadata
+                is_training = self.current_session.metadata.get("is_training", False) if self.current_session else False
+                output_dir = self.training_dir if is_training else self.sessions_dir
+                
+                self._live_filepath = output_dir / filename
                 
                 # Open file for append (each event will be written immediately)
                 self._live_file = open(self._live_filepath, 'a', encoding='utf-8')
@@ -708,8 +724,13 @@ def log_action(action: str, action_type: str = "blind"):
     logger.log_action(action, action_type)
 
 
-def log_action_complete(action: str, success: bool, duration_ms: float, 
-                        error: Optional[str] = None, details: Optional[Dict] = None):
+def log_action_complete(action: str, success: bool, duration_ms: float, error: Optional[str] = None):
     """Log action completion."""
     logger = get_execution_logger()
-    logger.log_action_complete(action, success, duration_ms, error, details)
+    logger.log_action_complete(action, success, duration_ms, error)
+
+
+def log_llm_interaction(component: str, prompt: str, response: str, model: str, duration_ms: float = 0):
+    """Log LLM interaction."""
+    logger = get_execution_logger()
+    logger.log_llm_interaction(component, prompt, response, model, duration_ms)

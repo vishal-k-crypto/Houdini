@@ -173,10 +173,11 @@ class TaskGenerator:
 class AutoCollector:
     """Main automation controller."""
     
-    def __init__(self):
+    def __init__(self, training_mode: bool = True):
         self.worker_id = os.getenv("WORKER_ID", "worker-default")
         self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
         self.generator = TaskGenerator()
+        self.training_mode = training_mode  # Enable training mode for excellent data quality
         
         try:
             self.redis_client = redis.from_url(self.redis_url)
@@ -189,6 +190,10 @@ class AutoCollector:
     def run_forever(self):
         """Main loop - generate and execute tasks continuously."""
         logger.info(f"🤖 Auto-collector starting (Worker: {self.worker_id})")
+        logger.info(f"📸 Training Mode: {'ENABLED' if self.training_mode else 'DISABLED'}")
+        if self.training_mode:
+            logger.info(f"   → Screenshots before/after every action")
+            logger.info(f"   → Data saved to: data/training_sessions/")
         
         iteration = 0
         while True:
@@ -234,8 +239,9 @@ class AutoCollector:
         try:
             start_time = time.time()
             
-            # Run the task
-            result = run_task_internal(task['description'])
+            # Run the task in TRAINING MODE for excellent data quality
+            # This captures screenshots before/after every action
+            result = run_task_internal(task['description'], is_training=self.training_mode)
             
             duration = time.time() - start_time
             
@@ -296,8 +302,14 @@ def main():
     logger.info("🚀 Starting Automated Data Collector")
     logger.info(f"   Worker ID: {os.getenv('WORKER_ID', 'default')}")
     logger.info(f"   Display: {os.getenv('DISPLAY', 'not set')}")
+    logger.info(f"   Training Mode: ENABLED (excellent data quality)")
+    logger.info(f"   Data saved to: data/training_sessions/")
     
-    collector = AutoCollector()
+    # Training mode = True for excellent data quality:
+    # - Screenshots before/after every action (200% coverage)
+    # - Only successful sessions saved
+    # - Data saved to training_sessions folder
+    collector = AutoCollector(training_mode=True)
     collector.run_forever()
 
 
