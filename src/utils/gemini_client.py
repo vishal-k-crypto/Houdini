@@ -6,6 +6,11 @@ import base64
 from pathlib import Path
 from typing import Optional
 from .logging import logger
+try:
+    from ..replay.execution_logger import log_llm_interaction
+except ImportError:
+    # Fallback if logger not available
+    def log_llm_interaction(*args, **kwargs): pass
 
 # For vision tasks, we'll use the Python SDK since CLI doesn't support images
 try:
@@ -87,6 +92,16 @@ class GeminiCLI:
                     output = result.stdout.strip()
                     if output:
                         logger.debug(f"Gemini ({model_to_use}) response time: {duration:.1f}s")
+                        
+                        # Log to execution logger for training data
+                        log_llm_interaction(
+                            component="gemini_cli",
+                            prompt=prompt,
+                            response=output,
+                            model=model_to_use,
+                            duration_ms=duration * 1000
+                        )
+                        
                         return output
                     else:
                         logger.warning("Empty response from Gemini CLI")
@@ -170,7 +185,18 @@ class GeminiVision:
                 duration = time.time() - start_time
                 logger.info(f"Gemini Vision response time: {duration:.1f}s")
                 
-                return response.text
+                response_text = response.text
+                
+                # Log to execution logger for training data
+                log_llm_interaction(
+                    component="gemini_vision",
+                    prompt=prompt + " [With Image]",
+                    response=response_text,
+                    model=self.model_name,
+                    duration_ms=duration * 1000
+                )
+                
+                return response_text
                 
             except Exception as e:
                 logger.error(f"Gemini Vision error (attempt {attempt+1}/{retry_count}): {e}")

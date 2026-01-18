@@ -73,6 +73,10 @@ class EventType(str, Enum):
     KEY_PRESS = "key_press"
     KEY_HOTKEY = "key_hotkey"
     TEXT_TYPE = "text_type"
+    
+    # LLM events (for training)
+    LLM_PROMPT = "llm_prompt"
+    LLM_RESPONSE = "llm_response"
 
 
 @dataclass
@@ -181,6 +185,9 @@ class ExecutionLogger:
         self.sessions_dir = Path(__file__).parent.parent.parent / "data" / "replay_sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         
+        self.training_dir = Path(__file__).parent.parent.parent / "data" / "training_sessions"
+        self.training_dir.mkdir(parents=True, exist_ok=True)
+        
         self.current_session: Optional[ExecutionSession] = None
         self.session_start_time_ms: int = 0
         self.cursor_tracking = False
@@ -204,9 +211,13 @@ class ExecutionLogger:
         self._initialized = True
     
     def start_session(self, task_id: str, task_description: str, 
-                      metadata: Optional[Dict] = None) -> ExecutionSession:
+                      metadata: Optional[Dict] = None, is_training: bool = False) -> ExecutionSession:
         """Start a new execution session with live recording."""
         self.session_start_time_ms = int(time.time() * 1000)
+        
+        # Add is_training to metadata
+        metadata = metadata or {}
+        metadata["is_training"] = is_training
         
         self.current_session = ExecutionSession(
             task_id=task_id,
@@ -314,12 +325,13 @@ class ExecutionLogger:
             "level": level,
         })
     
-    def log_action(self, action: str, action_type: str = "blind"):
-        """Log action start."""
+    def log_action(self, action: str, action_type: str = "blind", 
+                   screenshot_path: Optional[str] = None):
+        """Log action start with optional pre-action screenshot."""
         self.log_event(EventType.ACTION_START, {
             "action": action,
             "action_type": action_type,
-        })
+        }, screenshot_path=screenshot_path)
     
     def log_action_complete(self, action: str, success: bool, 
                            duration_ms: float, error: Optional[str] = None):
@@ -380,6 +392,21 @@ class ExecutionLogger:
     def log_text_type(self, text: str):
         """Log text typing."""
         self.log_event(EventType.TEXT_TYPE, {"text": text})
+
+    def log_llm_interaction(self, component: str, prompt: str, response: str, model: str, duration_ms: float = 0):
+        """Log LLM prompt and response for training data."""
+        self.log_event(EventType.LLM_PROMPT, {
+            "component": component,
+            "prompt": prompt,
+            "model": model
+        })
+        
+        self.log_event(EventType.LLM_RESPONSE, {
+            "component": component,
+            "response": response,
+            "model": model,
+            "duration_ms": duration_ms
+        })
     
     def log_screenshot_auto(self, trigger: str = "checkpoint", description: str = "") -> Optional[str]:
         """
@@ -471,7 +498,12 @@ class ExecutionLogger:
             return
         
         filename = f"{self.current_session.task_id}_{self.current_session.started_at.replace(':', '-').replace('.', '-')}.json"
-        filepath = self.sessions_dir / filename
+        
+        # Determine output directory based on metadata
+        is_training = self.current_session.metadata.get("is_training", False)
+        output_dir = self.training_dir if is_training else self.sessions_dir
+        
+        filepath = output_dir / filename
         
         with open(filepath, 'w') as f:
             json.dump(self.current_session.to_dict(), f, indent=2)
@@ -498,6 +530,11 @@ class ExecutionLogger:
             if filepath.stem.startswith(task_id):
                 return self._recover_live_session(filepath)
         
+        # Check training sessions too
+        for filepath in self.training_dir.glob("*.json"):
+            if filepath.name.startswith(task_id):
+                return self.load_session(filepath)
+        
         return None
     
     # ========== LIVE RECORDING METHODS (Interrupt-Safe) ==========
@@ -508,8 +545,14 @@ class ExecutionLogger:
             try:
                 # Create live file path
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"{task_id}_{timestamp}.live.jsonl"
-                self._live_filepath = self.sessions_dir / filename
+                
+                # Determine output directory based on metadata
+                is_training = self.current_session.metadata.get("is_training", False) if self.current_session else False
+                output_dir = self.training_dir if is_training else self.sessions_dir
+                
+                self._live_filepath = output_dir / filename
                 
                 # Open file for append (each event will be written immediately)
                 self._live_file = open(self._live_filepath, 'a', encoding='utf-8')
@@ -685,3 +728,9 @@ def log_action_complete(action: str, success: bool, duration_ms: float, error: O
     """Log action completion."""
     logger = get_execution_logger()
     logger.log_action_complete(action, success, duration_ms, error)
+
+
+def log_llm_interaction(component: str, prompt: str, response: str, model: str, duration_ms: float = 0):
+    """Log LLM interaction."""
+    logger = get_execution_logger()
+    logger.log_llm_interaction(component, prompt, response, model, duration_ms)

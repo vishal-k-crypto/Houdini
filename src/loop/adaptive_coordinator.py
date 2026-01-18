@@ -257,7 +257,7 @@ class AdaptiveLoopCoordinator:
         if self._replay_logger and self._replay_logger.current_session:
             self._replay_logger.log_phase_change(old_phase.value, new_phase.value)
         
-    def execute(self, task: str) -> Dict:
+    def execute(self, task: str, is_training: bool = False) -> Dict:
         """Execute a task using the adaptive architecture."""
         import uuid
         start_time = time.time()
@@ -279,7 +279,8 @@ class AdaptiveLoopCoordinator:
                     task_description=task,
                     metadata={
                         "architecture": "adaptive_coordinator",
-                    }
+                    },
+                    is_training=is_training
                 )
                 logger.debug("📼 Replay session started for time travel debugging")
             except Exception as e:
@@ -1123,9 +1124,14 @@ Generate actions:"""
                         })
                         return False  # Will trigger supervisor guidance
                 
-                # Log action start to replay system
+                # Capture screenshot BEFORE action for state representation
+                screenshot_path = None
                 if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
-                    self._replay_logger.log_action(action.description, action.action_type)
+                    screenshot_path = self._replay_logger.log_screenshot_auto(trigger="pre_action", description=f"Before: {action.description}")
+                
+                # Log action start to replay system with screenshot
+                if hasattr(self, '_replay_logger') and self._replay_logger and self._replay_logger.current_session:
+                    self._replay_logger.log_action(action.description, action.action_type, screenshot_path=screenshot_path)
                 
                 # DEBUG: Log that we're about to execute
                 logger.debug(f"Executing action type: {action.action_type} with params: {action.params}")

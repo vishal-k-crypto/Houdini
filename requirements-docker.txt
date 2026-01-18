@@ -1,0 +1,39 @@
+# Core
+rich>=13.0.0
+pyautogui>=0.9.54
+pytesseract>=0.3.10
+pillow>=10.0.0
+# llama-cpp-python>=0.2.90 # Heavy, optional if using Ollama exclusively? Keeping commented out if not needed.
+playwright>=1.48.0
+python-dotenv>=1.0.0
+google-genai>=0.2.0
+
+# Data Validation
+pydantic>=2.0.0
+
+# Vector Database
+faiss-cpu>=1.7.0
+
+# Human-like cursor control
+numpy>=1.24.0
+scipy>=1.11.0
+
+# Probability & Confidence Models
+scikit-fuzzy>=0.5.0
+pgmpy>=1.0.0
+networkx>=3.0
+
+# LangGraph
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# TUI
+textual>=0.45.0
+
+# Vision & ML (TinyClick support - CPU/Linux)
+# Note: TinyClick and OmniParser use these.
+ultralytics>=8.0.0
+transformers>=4.36.0
+accelerate>=0.25.0
+# Torch CPU version usually preferred for lighter image, but allow standard install:
+torch>=2.0.0
