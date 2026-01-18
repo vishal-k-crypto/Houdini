@@ -238,7 +238,7 @@ def _tinyclick_fallback(
         # SAFETY CHECK: Protect against accidental address bar clicks (y < 110)
         # unless user explicitly asks for "address", "url", "browser", etc.
         action_lower = action_description.lower()
-        explicit_nav_intent = any(w in action_lower for w in ['address', 'url', 'link', 'bar', 'omnibox', 'browser', 'navigation'])
+        explicit_nav_intent = any(w in action_lower for w in ['address', 'url', 'omnibox', 'browser', 'navigation'])
         
         if y < 110 and not explicit_nav_intent:
             logger.warning(f"  ⚠️ TinyClick result ({x}, {y}) is in browser chrome (likely address bar), but no explicit intent found.")
@@ -353,7 +353,7 @@ def _analyze_and_execute(action_description: str) -> Dict:
         return {"success": False, "reason": "no_match"}
     
     # Check for explicit address bar intent
-    explicit_nav_intent = any(w in desc_lower for w in ['address', 'url', 'link', 'bar', 'omnibox', 'browser', 'navigation'])
+    explicit_nav_intent = any(w in desc_lower for w in ['address', 'url', 'omnibox', 'browser', 'navigation'])
     
     # Refine scores with address bar detection
     refined_candidates = []
