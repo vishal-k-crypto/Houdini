@@ -54,7 +54,7 @@ class ExecutorLoop:
     
     def __init__(self, state: LoopState, 
                  on_vision_needed: Optional[Callable] = None,
-                 action_delay: float = 0.1,
+                 action_delay: float = 0.05,
                  cli = None):
         """
         Args:
@@ -174,14 +174,14 @@ class ExecutorLoop:
                         self.state.status = LoopStatus.COMPLETED
                         
                         # Save final checkpoint with screenshot
-                        try:
-                            checkpoint = self.state.save_checkpoint(
-                                description="Task completed successfully",
-                                capture_screenshot=True
-                            )
-                            logger.info(f"📸 Final checkpoint saved: {checkpoint.screenshot_path}")
-                        except Exception as e:
-                            logger.warning(f"Failed to save final checkpoint: {e}")
+                        # try:
+                        #     checkpoint = self.state.save_checkpoint(
+                        #         description="Task completed successfully",
+                        #         capture_screenshot=True
+                        #     )
+                        #     logger.info(f"📸 Final checkpoint saved: {checkpoint.screenshot_path}")
+                        # except Exception as e:
+                        #     logger.warning(f"Failed to save final checkpoint: {e}")
                         
                         break
                     else:
@@ -310,21 +310,21 @@ class ExecutorLoop:
                 self._replay_logger.log_batch_complete(self.state.current_batch_idx, True)
             
             # Save checkpoint with screenshot after batch completion
-            try:
-                checkpoint = self.state.save_checkpoint(
-                    description=f"After batch {self.state.current_batch_idx + 1}",
-                    capture_screenshot=True
-                )
-                logger.debug(f"  📸 Checkpoint saved: {checkpoint.screenshot_path}")
+            # try:
+            #     checkpoint = self.state.save_checkpoint(
+            #         description=f"After batch {self.state.current_batch_idx + 1}",
+            #         capture_screenshot=True
+            #     )
+            #     logger.debug(f"  📸 Checkpoint saved: {checkpoint.screenshot_path}")
                 
-                # Log screenshot to replay
-                if self._replay_logger and self._replay_logger.current_session and checkpoint.screenshot_path:
-                    self._replay_logger.log_screenshot(
-                        checkpoint.screenshot_path,
-                        f"After batch {self.state.current_batch_idx + 1}"
-                    )
-            except Exception as e:
-                logger.debug(f"  Screenshot checkpoint failed: {e}")
+            #     # Log screenshot to replay
+            #     if self._replay_logger and self._replay_logger.current_session and checkpoint.screenshot_path:
+            #         self._replay_logger.log_screenshot(
+            #             checkpoint.screenshot_path,
+            #             f"After batch {self.state.current_batch_idx + 1}"
+            #         )
+            # except Exception as e:
+            #     logger.debug(f"  Screenshot checkpoint failed: {e}")
             
             self.state.advance_batch()
             # Event-driven wait for UI to settle after batch
@@ -510,14 +510,15 @@ class ExecutorLoop:
                 
             elif action.startswith("wait:"):
                 secs = float(action[5:])
-                # Use event-driven wait if available, otherwise fixed sleep
-                if self._ui_wait and secs >= 0.3:
-                    # For longer waits, use UI stability check
+                # LIGHTNING MODE: Treat 'wait' as a MAXIMUM, not a mandate.
+                # If UI stabilizes earlier, Go!
+                if self._ui_wait and secs >= 0.1:
+                    # Use tighter stability threshold (50ms) for instant reaction
                     result = self._ui_wait.wait_for_ui_stable(
                         max_wait_ms=int(secs * 1000),
-                        stability_ms=150
+                        stability_ms=50  # 50ms stability is enough to assume ready
                     )
-                    logger.debug(f"Smart wait: requested {secs}s, actual {result.waited_ms:.0f}ms")
+                    logger.info(f"⚡ Smart wait: Limit {secs}s -> Done in {result.waited_ms/1000:.2f}s")
                 else:
                     time.sleep(secs)
                 
@@ -572,10 +573,10 @@ class ExecutorLoop:
         if self._ui_wait:
             try:
                 if action_type in ("batch_complete", "vision"):
-                    # These need longer stability checks
+                    # These need longer stability checks but we still want speed
                     result = self._ui_wait.wait_for_ui_stable(
-                        max_wait_ms=2000,
-                        stability_ms=200
+                        max_wait_ms=1000,
+                        stability_ms=50  # Reduced from 100ms
                     )
                 else:
                     result = self._ui_wait.smart_wait_after_action(action_type)
@@ -585,14 +586,15 @@ class ExecutorLoop:
                 time.sleep(0.1)
         else:
             # Fallback to fixed sleeps
+            # Fallback to fixed sleeps
             if action_type == "type":
-                time.sleep(0.05)
+                time.sleep(0.02)
             elif action_type == "click":
-                time.sleep(0.15)
-            elif action_type in ("batch_complete", "vision"):
-                time.sleep(0.3)
-            else:
                 time.sleep(0.1)
+            elif action_type in ("batch_complete", "vision"):
+                time.sleep(0.1)
+            else:
+                time.sleep(0.02)
             raise
     
     def stop(self):
