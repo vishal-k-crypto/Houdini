@@ -325,5 +325,43 @@ def main():
     logger.info(f"\n🎉 Completed in {elapsed:.1f}s")
 
 
+def run_task_internal(task_description: str) -> dict:
+    """
+    Internal API for running tasks programmatically.
+    Used by auto_collector.py for automated data collection.
+    
+    Args:
+        task_description: The task to execute
+        
+    Returns:
+        dict: Result with keys: success, error, session_id, duration
+    """
+    from .loop.adaptive_coordinator import AdaptiveLoopCoordinator
+    from .utils.ollama_client import OllamaClient
+    
+    try:
+        client = OllamaClient()
+        coordinator = AdaptiveLoopCoordinator(
+            client=client,
+            enable_thinking_window=False,  # No GUI in Docker
+            max_iterations=100
+        )
+        
+        result = coordinator.execute(task_description)
+        
+        return {
+            "success": result.get("success", False),
+            "error": result.get("error"),
+            "session_id": result.get("session_id"),
+        }
+    except Exception as e:
+        logger.error(f"Task execution failed: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "session_id": None,
+        }
+
+
 if __name__ == "__main__":
     main()
