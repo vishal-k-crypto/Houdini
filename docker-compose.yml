@@ -1,67 +1,36 @@
-version: '3.8'
-
 services:
-  # Redis task queue
+  # Redis for task queue coordination (optional)
   redis:
     image: redis:alpine
-    container_name: houdini-redis
     ports:
       - "6379:6379"
-    volumes:
-      - redis-data:/data
     restart: unless-stopped
 
-  # Agent worker (can scale up)
-  agent:
+  # Main data collector worker
+  collector:
     build: .
+    image: houdini-agent
+    environment:
+      - WORKER_ID=collector-1
+      - REDIS_URL=redis://redis:6379
+      - DISPLAY=:99
+    volumes:
+      # Persist collected data to host
+      - ./data:/app/data
     depends_on:
       - redis
-    environment:
-      - DISPLAY=:99
-      - SCREEN_WIDTH=1920
-      - SCREEN_HEIGHT=1080
-      - AUTO_MODE=true
-      - REDIS_URL=redis://redis:6379
-      - WORKER_ID=worker-${WORKER_NUM:-1}
-      - ENABLE_VNC=false
-    volumes:
-      # Mount data directory for persistence
-      - ./data:/app/data
-      # Mount source code for development
-      - ./src:/app/src
-      # Share generated data across workers
-      - shared-data:/app/shared
-    shm_size: 2gb  # Increase shared memory for Chrome
     restart: unless-stopped
-    deploy:
-      replicas: 3  # Run 3 workers in parallel
 
-  # VNC-enabled agent for debugging (optional)
-  agent-debug:
-    build: .
-    depends_on:
-      - redis
-    environment:
-      - DISPLAY=:99
-      - SCREEN_WIDTH=1920
-      - SCREEN_HEIGHT=1080
-      - AUTO_MODE=false  # Manual mode
-      - REDIS_URL=redis://redis:6379
-      - WORKER_ID=debug-worker
-      - ENABLE_VNC=true
-    ports:
-      - "5900:5900"  # VNC port
-    volumes:
-      - ./data:/app/data
-      - ./src:/app/src
-    shm_size: 2gb
-    profiles:
-      - debug  # Only start with: docker-compose --profile debug up
-
-volumes:
-  redis-data:
-  shared-data:
-
-networks:
-  default:
-    name: houdini-network
+  # Additional workers (scale with: docker compose up -d --scale collector=3)
+  # collector-2:
+  #   build: .
+  #   image: houdini-agent
+  #   environment:
+  #     - WORKER_ID=collector-2
+  #     - REDIS_URL=redis://redis:6379
+  #     - DISPLAY=:99
+  #   volumes:
+  #     - ./data:/app/data
+  #   depends_on:
+  #     - redis
+  #   restart: unless-stopped
