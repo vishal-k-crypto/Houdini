@@ -30,6 +30,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+try:
+    from ..replay.execution_logger import log_llm_interaction
+except ImportError:
+    # Fallback if logger not available
+    def log_llm_interaction(*args, **kwargs): pass
+
 # Paths
 HOUDINI_ROOT = Path(__file__).parent.parent.parent
 TINYCLICK_VENV = HOUDINI_ROOT / ".tinyclick-venv"
@@ -113,6 +119,16 @@ def predict_click_with_result(
             output = json.loads(result.stdout.strip())
             if output.get("success"):
                 logger.info(f"TinyClick: Found at ({output['x']}, {output['y']}) in {output.get('inference_ms', 0):.0f}ms")
+                
+            # Log to execution logger for training data
+            log_llm_interaction(
+                component="tinyclick",
+                prompt=f"Element: {element_description} | Context: {task_context}",
+                response=json.dumps(output),
+                model="tinyclick-florence2",
+                duration_ms=output.get("inference_ms", 0)
+            )
+            
             return output
         except json.JSONDecodeError as e:
             return {

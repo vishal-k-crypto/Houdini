@@ -1,0 +1,36 @@
+services:
+  # Redis for task queue coordination (optional)
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # Main data collector worker
+  collector:
+    build: .
+    image: houdini-agent
+    environment:
+      - WORKER_ID=collector-1
+      - REDIS_URL=redis://redis:6379
+      - DISPLAY=:99
+    volumes:
+      # Persist collected data to host
+      - ./data:/app/data
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Additional workers (scale with: docker compose up -d --scale collector=3)
+  # collector-2:
+  #   build: .
+  #   image: houdini-agent
+  #   environment:
+  #     - WORKER_ID=collector-2
+  #     - REDIS_URL=redis://redis:6379
+  #     - DISPLAY=:99
+  #   volumes:
+  #     - ./data:/app/data
+  #   depends_on:
+  #     - redis
+  #   restart: unless-stopped

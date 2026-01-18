@@ -87,7 +87,7 @@ def run_loop_mode(args):
             )
             
             logger.info("🧠 Using ADAPTIVE architecture (macro planner → micro executor → adaptive supervisor)")
-            result = coordinator.execute(args.task)
+            result = coordinator.execute(args.task, is_training=getattr(args, 'train_mode', False))
         else:
             # Legacy: Original loop coordinator
             from .loop.loop_coordinator import LoopCoordinator
@@ -276,6 +276,10 @@ def main():
     parser.add_argument("--debug-report-all", dest="debug_report_all", action="store_true", default=False,
                         help="Generate debug reports for all failed sessions")
     
+    # Training Data Collection (NEW!)
+    parser.add_argument("--train", dest="train_mode", action="store_true", default=False,
+                        help="Run in training data collection mode (save full LLM logs to training_sessions)")
+    
     args = parser.parse_args()
     
     # Handle debug report mode
@@ -325,13 +329,15 @@ def main():
     logger.info(f"\n🎉 Completed in {elapsed:.1f}s")
 
 
-def run_task_internal(task_description: str) -> dict:
+def run_task_internal(task_description: str, is_training: bool = True) -> dict:
     """
     Internal API for running tasks programmatically.
     Used by auto_collector.py for automated data collection.
     
     Args:
         task_description: The task to execute
+        is_training: If True, enables training mode for excellent data quality
+                    (captures screenshots before/after actions, saves to training_sessions)
         
     Returns:
         dict: Result with keys: success, error, session_id, duration
@@ -347,7 +353,8 @@ def run_task_internal(task_description: str) -> dict:
             max_iterations=100
         )
         
-        result = coordinator.execute(task_description)
+        # Enable training mode for high-quality data collection
+        result = coordinator.execute(task_description, is_training=is_training)
         
         return {
             "success": result.get("success", False),
