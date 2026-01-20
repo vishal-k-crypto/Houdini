@@ -55,17 +55,49 @@ PLANNING_RULES = """
 - Use direct URL navigation when possible to avoid vision actions
 
 ### VISION ACTION DESCRIPTIONS:
-When vision actions are needed, be SPECIFIC:
+When vision actions are needed, be SPECIFIC about the INTERACTIVE ELEMENT:
 - GOOD: "click the first video thumbnail in the main grid"
 - BAD: "click the video"
 - GOOD: "click the first search result link"
 - BAD: "click result"
 
+### CRITICAL: ALWAYS TARGET CLICKABLE ELEMENTS
+When clicking, ALWAYS specify the interactive element type:
+
+**❌ BAD (vague - will click random text):**
+- "click:second question"
+- "click:coding question section"
+- "click:the item"
+
+**✅ GOOD (specific - targets clickable elements):**
+- "click:Complete Now button for the second question"
+- "click:Start button next to Question 2"
+- "click:Submit button at bottom of page"
+- "click:the green button labeled Complete Now"
+- "click:View Details link under the second item"
+
+**Priority order for click targets:**
+1. Buttons (Button, Submit, Complete Now, Start, View, etc.)
+2. Links (<a> tags, underlined/colored text with href)
+3. Input fields (text boxes, search bars, checkboxes)
+4. Icons (play icon, close X, hamburger menu)
+5. ONLY as last resort: clickable divs or text areas
+
 ### TASK PATTERNS:
+
 - "search X" → blind: [Cmd+Space, "Safari", Enter, Cmd+L, type "X", Enter]
 - "open X and search Y" → blind: [Cmd+Space, "Safari", Enter, Cmd+L, "Y", Enter]
 - "open latest video from {creator}" → blind: [Cmd+Space, Safari, Enter, Cmd+L, youtube.com/@{creator}/videos, Enter] + vision: click first video thumbnail
 - "click first result" → vision: click first search result in main content area
+
+### SAVING FILES (CRITICAL):
+- Saving to specific folder needs 2 steps (macOS rule):
+  1. Open Save Dialog (Cmd+S)
+  2. Navigate to folder: [hotkey:command,shift,g, type:folder_path, key:return, wait:0.5]
+  3. Type filename: [type:filename.ext, key:return]
+- NEVER type "path/to/filename" directly into main Save prompt - it fails!
+- Example: "Save as news.txt in Downloads" → 
+  [hotkey:command,s, wait:1, hotkey:command,shift,g, type:~/Downloads/, key:return, wait:0.5, type:news.txt, key:return]
 """
 
 
@@ -220,6 +252,9 @@ Generate the plan now:
             # Cache the plan
             self.memory.remember(task, {"batches": batches})
             
+            # Post-process for robustness (Fix for "Stuck in Save Dialog")
+            batches = self._sanitize_batches(batches)
+            
             logger.info(f"✅ Generated plan with {len(batches)} batches")
             return batches
             
@@ -227,6 +262,54 @@ Generate the plan now:
             logger.error(f"Failed to generate plan with Ollama: {e}")
             # Fallback to simple plan
             return self._fallback_plan(task)
+
+    def _sanitize_batches(self, batches: List[Dict]) -> List[Dict]:
+        """
+        Post-process batches to enforce robust execution rules.
+        CRITICAL: Intercepts direct file path typing -> converts to Go to Folder sequence.
+        """
+        sanitized = []
+        for batch in batches:
+            if batch["type"] == "blind":
+                new_actions = []
+                for action in batch["actions"]:
+                    # Detect: type:~/path/to/file or type:/path/to/file
+                    # We want to catch when the agent tries to type a full path
+                    if action.startswith("type:~") or action.startswith("type:/"):
+                        path = action[5:].strip()
+                        # Only rewrite if it looks like a file path (has extension or deep path)
+                        if "." in path or "/" in path:
+                            # Split into folder and filename
+                            if "/" in path:
+                                folder = str(Path(path).parent)
+                                filename = Path(path).name
+                            else:
+                                folder = "~/"  # Default to home if weird path
+                                filename = path
+
+                            logger.info(f"🛡️  Rewriting robust save for: {path} -> {folder} / {filename}")
+                                
+                            # Generate ROBUST sequence
+                            # 1. Open Go to Folder
+                            new_actions.append("hotkey:command,shift,g")
+                            new_actions.append("wait:1.2")  # Wait longer for sheet animation
+                            # 2. Type folder path
+                            new_actions.append(f"type:{folder}")
+                            new_actions.append("key:return")
+                            new_actions.append("wait:0.8")  # Wait for navigation
+                            # 3. Type filename (now we are in correct folder)
+                            new_actions.append(f"type:{filename}")
+                            # 4. Original action likely had a return coming after, 
+                            # but let's leave it to the next step or append it if needed.
+                            # Usually the plan has "key:return" as the NEXT action.
+                            # So just typing the filename is correct here.
+                            
+                            continue # Skip adding the original 'type:...' action
+                            
+                    new_actions.append(action)
+                batch["actions"] = new_actions
+            sanitized.append(batch)
+        return sanitized
     
     def _format_executor_history(self, history: Optional[List[Dict]]) -> str:
         """Format executor history for context."""

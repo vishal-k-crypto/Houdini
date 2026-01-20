@@ -51,6 +51,44 @@ def is_available() -> bool:
 TINYCLICK_AVAILABLE = is_available()
 
 
+def _enhance_click_instruction(action_description: str) -> str:
+    """
+    Enhance click instructions to prefer interactive elements.
+    
+    This helps TinyClick target buttons/links instead of static text when
+    the original instruction is vague.
+    
+    Examples:
+        "click second question" -> "click the button or link near second question"
+        "click Submit button" -> "click Submit button" (already specific, no change)
+    """
+    action_lower = action_description.lower()
+    
+    # Already mentions interactive elements - no change needed
+    interactive_keywords = [
+        'button', 'btn', 'link', 'submit', 'input', 'field', 'textbox',
+        'checkbox', 'radio', 'complete now', 'start', 'view', 'open',
+        'download', 'upload', 'play', 'pause', 'stop', 'close', 'cancel',
+        'confirm', 'ok', 'yes', 'no', 'next', 'previous', 'back', 'forward',
+        'icon', 'menu', 'dropdown', 'select', 'search bar', 'search box'
+    ]
+    if any(kw in action_lower for kw in interactive_keywords):
+        return action_description
+    
+    # Vague content references that often lead to clicking non-interactive text
+    vague_content_words = [
+        'question', 'item', 'section', 'paragraph', 'text', 'description',
+        'content', 'area', 'region', 'element', 'thing', 'part', 'box'
+    ]
+    
+    # If the description contains vague content words, add affordance hint
+    if any(word in action_lower for word in vague_content_words):
+        return f"{action_description} (prefer clicking button or link, not plain text)"
+    
+    return action_description
+
+
+
 def predict_click_with_result(
     element_description: str,
     screenshot_path: Optional[str] = None,
@@ -87,12 +125,18 @@ def predict_click_with_result(
         }
     
     try:
-        # Build command
-        cmd = [str(TINYCLICK_PYTHON), str(TINYCLICK_SERVER), element_description]
+        # Enhance the instruction to prefer interactive elements FIRST
+        enhanced_description = _enhance_click_instruction(element_description)
+        if enhanced_description != element_description:
+            logger.info(f"TinyClick: Enhanced '{element_description}' -> '{enhanced_description}'")
+        
+        # Build command with enhanced description
+        cmd = [str(TINYCLICK_PYTHON), str(TINYCLICK_SERVER), enhanced_description]
         if screenshot_path:
             cmd.append(screenshot_path)
         
-        logger.info(f"TinyClick: Predicting '{element_description}'...")
+        logger.info(f"TinyClick: Predicting '{enhanced_description}'...")
+
         
         # Call server in separate venv
         # Use home directory as cwd to avoid project's logging.py shadowing stdlib

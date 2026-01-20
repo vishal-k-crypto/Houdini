@@ -112,6 +112,14 @@ except ImportError:
     CONFIDENCE_MODEL_AVAILABLE = False
     logger.debug("Execution confidence model not available")
 
+# Import lesson store for automatic failure recording
+try:
+    from ..utils.lesson_store import lesson_store
+    LESSON_STORE_AVAILABLE = True
+except ImportError:
+    LESSON_STORE_AVAILABLE = False
+    logger.debug("Lesson store not available in coordinator")
+
 
 class AdaptivePhase(str, Enum):
     """Current phase of adaptive execution."""
@@ -451,6 +459,19 @@ class AdaptiveLoopCoordinator:
             logger.error(f"❌ Adaptive execution error: {e}")
             import traceback
             traceback.print_exc()
+            
+            # Record failure to lesson store for learning
+            if LESSON_STORE_AVAILABLE:
+                try:
+                    lesson_store.record_failure(
+                        component="supervisor",
+                        task=task,
+                        error_type="execution_failure",
+                        error_details=str(e)
+                    )
+                    logger.debug("📚 Failure recorded to lesson store")
+                except Exception as lesson_err:
+                    logger.debug(f"Could not record failure to lesson store: {lesson_err}")
             
             # End replay session on error
             if self._replay_logger and self._replay_logger.current_session:
