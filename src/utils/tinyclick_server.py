@@ -73,11 +73,57 @@ def load_model():
 
 
 def capture_screenshot():
-    """Capture screen to temp file."""
-    fd, path = tempfile.mkstemp(suffix=".png", prefix="tinyclick_")
-    os.close(fd)
-    subprocess.run(["screencapture", "-x", path], check=True, capture_output=True)
-    return path
+    """Capture screen to temp file (cross-platform)."""
+    import platform
+    
+    system = platform.system()
+    if system == "Darwin":  # macOS
+        fd, path = tempfile.mkstemp(suffix=".png", prefix="tinyclick_")
+        os.close(fd)
+        subprocess.run(["screencapture", "-x", path], check=True, capture_output=True)
+        return path
+    elif system == "Linux":
+        # For scrot, let it create its own file
+        path = tempfile.mktemp(suffix=".png", prefix="tinyclick_")
+        try:
+            # scrot needs DISPLAY set and creates file itself
+            env = os.environ.copy()
+            if "DISPLAY" not in env:
+                env["DISPLAY"] = ":99"
+            result = subprocess.run(
+                ["scrot", path], 
+                check=True, 
+                capture_output=True,
+                env=env
+            )
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                return path
+            else:
+                raise RuntimeError(f"scrot created empty file: {path}")
+        except (FileNotFoundError, subprocess.CalledProcessError, RuntimeError) as e:
+            # Fallback to pyautogui
+            try:
+                import pyautogui
+                # Ensure pyautogui can access the display
+                os.environ.setdefault("DISPLAY", ":99")
+                screenshot = pyautogui.screenshot()
+                fd, path = tempfile.mkstemp(suffix=".png", prefix="tinyclick_")
+                os.close(fd)
+                screenshot.save(path)
+                return path
+            except Exception as e2:
+                raise RuntimeError(f"No screenshot tool available. scrot: {e}, pyautogui: {e2}")
+    else:
+        # Fallback for Windows or other
+        try:
+            import pyautogui
+            screenshot = pyautogui.screenshot()
+            fd, path = tempfile.mkstemp(suffix=".png", prefix="tinyclick_")
+            os.close(fd)
+            screenshot.save(path)
+            return path
+        except Exception:
+            raise RuntimeError("No screenshot tool available")
 
 
 def parse_coordinates(output_text: str, width: int, height: int):
