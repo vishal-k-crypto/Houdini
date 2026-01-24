@@ -122,13 +122,22 @@ def execute_vision_action(cli, action_description: str, max_attempts: int = 3,
         }
     
     # Strategy 1: Smart heuristic analysis via accessibility (with Awareness & Exploration)
-    result = _analyze_and_execute(action_description)
+    # NOTE: This only works on macOS - on Linux/Docker we skip to TinyClick
+    import platform
+    is_linux = platform.system() == "Linux"
     
-    if result.get("success"):
-        result["method"] = "accessibility"
-        result["match_probability"] = 1.0  # Accessibility matches are exact
-        result["flexibility"] = flexibility_info
-        return result
+    if not is_linux:
+        result = _analyze_and_execute(action_description)
+        
+        if result.get("success"):
+            result["method"] = "accessibility"
+            result["match_probability"] = 1.0  # Accessibility matches are exact
+            result["flexibility"] = flexibility_info
+            return result
+    else:
+        # On Linux, accessibility APIs don't exist - mark as zero_elements to use TinyClick
+        logger.info("  📡 Linux detected - skipping accessibility, using TinyClick")
+        result = {"success": False, "reason": "zero_elements"}
 
     # Get dynamic match threshold from probability model
     min_match_prob = exec_params.get('min_match_probability', 0.5)

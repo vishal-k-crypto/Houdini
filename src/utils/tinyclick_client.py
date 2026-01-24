@@ -44,8 +44,31 @@ TINYCLICK_SERVER = Path(__file__).parent / "tinyclick_server.py"
 
 
 def is_available() -> bool:
-    """Check if TinyClick venv and server are available."""
-    return TINYCLICK_PYTHON.exists() and TINYCLICK_SERVER.exists()
+    """Check if TinyClick is available (via dedicated venv or system Python)."""
+    # First check dedicated venv (preferred on macOS)
+    if TINYCLICK_PYTHON.exists() and TINYCLICK_SERVER.exists():
+        return True
+    
+    # Fallback: Check if transformers is available in system Python (Docker)
+    # This allows TinyClick to work without a separate venv in Docker
+    if TINYCLICK_SERVER.exists():
+        try:
+            import transformers
+            return True
+        except ImportError:
+            pass
+    
+    return False
+
+
+def _get_python_executable() -> Path:
+    """Get the Python executable to use for TinyClick."""
+    # Prefer dedicated venv if available
+    if TINYCLICK_PYTHON.exists():
+        return TINYCLICK_PYTHON
+    # Fall back to system Python (useful in Docker)
+    import sys
+    return Path(sys.executable)
 
 
 TINYCLICK_AVAILABLE = is_available()
@@ -130,8 +153,9 @@ def predict_click_with_result(
         if enhanced_description != element_description:
             logger.info(f"TinyClick: Enhanced '{element_description}' -> '{enhanced_description}'")
         
-        # Build command with enhanced description
-        cmd = [str(TINYCLICK_PYTHON), str(TINYCLICK_SERVER), enhanced_description]
+        # Build command with enhanced description using appropriate Python
+        python_exe = _get_python_executable()
+        cmd = [str(python_exe), str(TINYCLICK_SERVER), enhanced_description]
         if screenshot_path:
             cmd.append(screenshot_path)
         

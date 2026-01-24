@@ -28,11 +28,17 @@ class OllamaClient:
             cloud_endpoint: Optional cloud endpoint URL (for Ollama Cloud)
         """
         self.model_name = model_name
-        self.cloud_endpoint = cloud_endpoint
+        import os
+        # Prioritize explicit arg, then env var, then None (local)
+        self.cloud_endpoint = cloud_endpoint or os.getenv("OLLAMA_ENDPOINT")
         self._verify_installation()
     
     def _verify_installation(self):
         """Check if Ollama is available."""
+        if self.cloud_endpoint:
+            # Skip binary check if using remote endpoint
+            return
+            
         try:
             result = subprocess.run(
                 ["ollama", "list"],

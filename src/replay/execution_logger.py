@@ -13,6 +13,7 @@ All events are timestamped in milliseconds for precise replay.
 """
 
 import json
+import os
 import time
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
@@ -408,6 +409,68 @@ class ExecutionLogger:
             "duration_ms": duration_ms
         })
     
+    def _capture_screenshot_cross_platform(self, filepath: Path) -> bool:
+        """
+        Capture screenshot using platform-appropriate method.
+        
+        Supports:
+        - macOS: screencapture (native, fast)
+        - Linux/Docker: scrot or pyautogui fallback
+        
+        Returns:
+            True if screenshot was captured successfully
+        """
+        import platform
+        import subprocess
+        
+        system = platform.system()
+        
+        if system == "Darwin":  # macOS
+            try:
+                result = subprocess.run(
+                    ["screencapture", "-x", "-C", str(filepath)],
+                    capture_output=True, timeout=5
+                )
+                return result.returncode == 0 and filepath.exists()
+            except Exception:
+                return False
+                
+        elif system == "Linux":
+            # Try scrot first (fast, reliable in Xvfb)
+            try:
+                result = subprocess.run(
+                    ["scrot", str(filepath)],
+                    capture_output=True, timeout=5,
+                    env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":99")}
+                )
+                if result.returncode == 0 and filepath.exists():
+                    return True
+            except FileNotFoundError:
+                pass  # scrot not installed
+            except Exception:
+                pass
+            
+            # Fallback to pyautogui (works with Xvfb)
+            if PYAUTOGUI_AVAILABLE:
+                try:
+                    screenshot = pyautogui.screenshot()
+                    screenshot.save(str(filepath))
+                    return filepath.exists()
+                except Exception:
+                    pass
+            
+            return False
+        else:
+            # Unsupported platform - try pyautogui as last resort
+            if PYAUTOGUI_AVAILABLE:
+                try:
+                    screenshot = pyautogui.screenshot()
+                    screenshot.save(str(filepath))
+                    return filepath.exists()
+                except Exception:
+                    pass
+            return False
+    
     def log_screenshot_auto(self, trigger: str = "checkpoint", description: str = "") -> Optional[str]:
         """
         Automatically capture and log a screenshot.
@@ -419,16 +482,10 @@ class ExecutionLogger:
         Returns:
             Path to saved screenshot, or None if capture failed
         """
-        if not PYAUTOGUI_AVAILABLE:
-            return None
-        
         if not self.current_session:
             return None
         
         try:
-            import subprocess
-            import tempfile
-            
             # Create screenshots directory
             screenshots_dir = self.sessions_dir.parent / "screenshots"
             screenshots_dir.mkdir(parents=True, exist_ok=True)
@@ -439,13 +496,8 @@ class ExecutionLogger:
             filename = f"{self.current_session.task_id}_{timestamp}_{safe_trigger}.png"
             filepath = screenshots_dir / filename
             
-            # Capture screen using macOS screencapture (fast and reliable)
-            result = subprocess.run(
-                ["screencapture", "-x", "-C", str(filepath)],
-                capture_output=True, timeout=5
-            )
-            
-            if result.returncode == 0 and filepath.exists():
+            # Capture screen using cross-platform method
+            if self._capture_screenshot_cross_platform(filepath):
                 # Log the screenshot event
                 self.log_event(EventType.SCREENSHOT, {
                     "trigger": trigger,

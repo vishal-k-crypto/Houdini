@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Automated task collector - generates and executes tasks 24/7.
+Focused on PPT Generation, Research, and Visual Asset Collection.
 """
 
 import os
@@ -8,10 +9,12 @@ import sys
 import time
 import random
 import logging
+import requests
 from datetime import datetime
 from typing import Dict, List, Optional
 import redis
 import json
+from bs4 import BeautifulSoup
 
 # Setup logging
 logging.basicConfig(
@@ -20,89 +23,91 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Task templates by category
+class LiveTopicFetcher:
+    """Fetches real-time trending topics from the web."""
+    
+    def __init__(self):
+        self.cached_topics = []
+        self.last_fetch = 0
+        self.cache_duration = 3600  # 1 hour
+        
+        # Fallback topics if fetch fails
+        self.fallback_topics = [
+            "Artificial Intelligence", "Climate Policy 2026", "Quantum Computing",
+            "SpaceX Starship", "Global Economic Outlook", "Mental Health in Tech",
+            "Sustainable Architecture", "Electric Vehicle Battery Tech"
+        ]
+
+    def get_trending_topics(self, limit=5) -> List[str]:
+        """Get trending topics, refreshing cache if needed."""
+        if time.time() - self.last_fetch > self.cache_duration or not self.cached_topics:
+            self._fetch_new_topics()
+            
+        if not self.cached_topics:
+            return random.sample(self.fallback_topics, min(limit, len(self.fallback_topics)))
+            
+        return random.sample(self.cached_topics, min(limit, len(self.cached_topics)))
+
+    def _fetch_new_topics(self):
+        """Scrape trending topics from Wikipedia/Google Trends."""
+        new_topics = []
+        try:
+            # Try Wikipedia Main Page "In the news"
+            resp = requests.get("https://en.wikipedia.org/wiki/Main_Page", timeout=5)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.content, 'html.parser')
+                # ITN box
+                itn_box = soup.find(id="mp-itn")
+                if itn_box:
+                    for link in itn_box.find_all('a'):
+                        title = link.get('title')
+                        if title and len(title) > 5 and "Wikipedia" not in title:
+                            new_topics.append(title)
+            
+            # Deduplicate and clean
+            self.cached_topics = list(set([t for t in new_topics if t]))
+            self.last_fetch = time.time()
+            logger.info(f"🌍 LiveTopicFetcher: Fetched {len(self.cached_topics)} new topics")
+            
+        except Exception as e:
+            logger.warning(f"Failed to fetch live topics: {e}")
+
+# Task templates by category - HYBRID CURRICULUM
 TASK_TEMPLATES = {
-    "search_browse": [
-        "Search for {topic} on Google",
-        "Go to {website} and search for {query}",
-        "Find information about {topic} on Wikipedia",
-        "Browse {category} articles on {news_site}",
-        "Look up {term} definition on dictionary.com",
+    "research_deep": [
+        "Research '{topic}'. Find 3 key statistics/facts from reliable sources (BBC, Reuters, TechCrunch) and save them to a text file named 'research_notes.txt'.",
+        "Investigate 'History of {topic}'. Create a markdown file with a timeline of 5 major events.",
+        "Compare '{topic}' vs its main competitor. Save a comparison table in a text file.",
     ],
     
-    "download": [
-        "Go to {site} and download {content}",
-        "Download the {quality} version of {media_item}",
-        "Find and download {resource_type} from {source}",
+    "visual_creation_libreoffice": [
+        "Open LibreOffice Impress. Create a 3-slide presentation about '{topic}'. Slide 1: Title. Slide 2: Key Facts (bullet points). Slide 3: Conclusion.",
+        "Open LibreOffice. Create a Title Slide for '{topic}' using a blue background style.",
+        "Open LibreOffice. Create a slide and insert an image related to '{topic}' (search for one first if needed).",
     ],
     
-    "navigation": [
-        "Navigate to the {section} section of {website}",
-        "Scroll down on {website} until you find {target}",
-        "Go to {website} home page",
-        "Visit {url} and explore the main sections",
+    "visual_creation_web": [
+        "Go to slides.new (Google Slides). Create a generic Title slide saying '{topic}' (skip login/signin if prompted, just use the interface if possible or fallback to researching if blocked).",
+        "Go to canva.com (public demo/templates). Search for a '{topic}' presentation template and take a screenshot of the best one.",
     ],
     
-    "content": [
-        "Read the article about {topic} on {news_site}",
-        "Watch a video about {subject} on YouTube",
-        "Listen to a podcast about {theme}",
+    "ai_copilot_workflow": [
+        "Go to Gamma.app (or similar AI deck generator). Generate a deck about '{topic}'. Once generated, take a screenshot of the outline.",
+        "Use an AI tool (ChatGPT/Claude/Gamma) to write a 5-slide outline for '{topic}', then open LibreOffice and manually copy the titles into 5 blank slides.",
     ],
     
-    "social": [
-        "Check {topic} on Reddit",
-        "Browse {category} posts on {social_site}",
-        "Look up {hashtag} on Twitter",
-    ],
-    
-    "productivity": [
-        "Look up weather forecast for {city}",
-        "Search for {recipe} recipe",
-        "Find {movie} showtimes near you",
-        "Look up stock price for {company}",
-    ],
+    "asset_collection": [
+        "Find 3 high-resolution diagrams explaining '{topic}'. Save them to the 'Downloads' folder.",
+        "Find a corporate logo associated with '{topic}' (transparent PNG) and save it.",
+    ]
 }
-
-# Data pools for parameterization
-DATA_POOLS = {
-    "topic": [
-        "artificial intelligence", "climate change", "electric vehicles",
-        "quantum computing", "space exploration", "renewable energy",
-        "cryptocurrency", "machine learning", "robotics", "biotechnology",
-        "virtual reality", "5G technology", "autonomous vehicles",
-        "gene editing", "blockchain", "neural networks",
-    ],
-    
-    "website": [
-        "github.com", "stackoverflow.com", "wikipedia.org",
-        "reddit.com", "medium.com", "dev.to", "arxiv.org",
-    ],
-    
-    "news_site": [
-        "bbc.com", "reuters.com", "theguardian.com",
-        "npr.org", "apnews.com",
-    ],
-    
-    "query": [
-        "how to {skill}", "best {item} 2026", "{topic} explained",
-        "tutorial for {subject}", "guide to {topic}",
-    ],
-    
-    "quality": ["highest", "best", "HD", "1080p", "4K", "maximum"],
-    
-    "category": ["technology", "science", "business", "health", "sports"],
-    
-    "city": ["New York", "London", "Tokyo", "Paris", "Berlin", "Sydney"],
-    
-    "company": ["Apple", "Google", "Microsoft", "Amazon", "Tesla", "NVIDIA"],
-}
-
 
 class TaskGenerator:
-    """Generates diverse, realistic tasks."""
+    """Generates diverse, realistic tasks using dynamic data."""
     
     def __init__(self):
         self.generated_count = 0
+        self.topic_fetcher = LiveTopicFetcher()
         
     def generate_task(self, difficulty: Optional[str] = None) -> Dict:
         """Generate a single task with parameters."""
@@ -111,31 +116,16 @@ class TaskGenerator:
         category = random.choice(list(TASK_TEMPLATES.keys()))
         template = random.choice(TASK_TEMPLATES[category])
         
-        # Extract placeholders from template
-        placeholders = self._extract_placeholders(template)
+        # Get dynamic data
+        topics = self.topic_fetcher.get_trending_topics(limit=1)
+        topic = topics[0] if topics else "Technology Trends"
         
         # Fill in parameters
-        params = {}
-        for placeholder in placeholders:
-            if placeholder in DATA_POOLS:
-                value = random.choice(DATA_POOLS[placeholder])
-                # Handle nested placeholders
-                if "{" in value:
-                    nested = self._extract_placeholders(value)
-                    for nested_ph in nested:
-                        if nested_ph in DATA_POOLS:
-                            value = value.replace(
-                                f"{{{nested_ph}}}",
-                                random.choice(DATA_POOLS[nested_ph])
-                            )
-                params[placeholder] = value
-        
-        # Generate final task description
-        task_description = template.format(**params)
+        task_description = template.replace("{topic}", topic)
         
         # Estimate difficulty
         if difficulty is None:
-            difficulty = self._estimate_difficulty(task_description, category)
+            difficulty = "hard" if "LibreOffice" in task_description or "Google Slides" in task_description else "medium"
         
         self.generated_count += 1
         
@@ -144,31 +134,9 @@ class TaskGenerator:
             "description": task_description,
             "category": category,
             "difficulty": difficulty,
-            "params": params,
+            "params": {"topic": topic},
             "generated_at": datetime.now().isoformat(),
         }
-    
-    def _extract_placeholders(self, template: str) -> List[str]:
-        """Extract {placeholder} names from template."""
-        import re
-        return re.findall(r'\{(\w+)\}', template)
-    
-    def _estimate_difficulty(self, task: str, category: str) -> str:
-        """Estimate task difficulty."""
-        # Simple heuristic
-        word_count = len(task.split())
-        
-        if "download" in category or word_count > 15:
-            return "hard"
-        elif "search" in category or "browse" in category:
-            return "easy"
-        else:
-            return "medium"
-    
-    def generate_batch(self, count: int = 10) -> List[Dict]:
-        """Generate a batch of tasks."""
-        return [self.generate_task() for _ in range(count)]
-
 
 class AutoCollector:
     """Main automation controller."""
@@ -191,9 +159,6 @@ class AutoCollector:
         """Main loop - generate and execute tasks continuously."""
         logger.info(f"🤖 Auto-collector starting (Worker: {self.worker_id})")
         logger.info(f"📸 Training Mode: {'ENABLED' if self.training_mode else 'DISABLED'}")
-        if self.training_mode:
-            logger.info(f"   → Screenshots before/after every action")
-            logger.info(f"   → Data saved to: data/training_sessions/")
         
         iteration = 0
         while True:
@@ -206,7 +171,7 @@ class AutoCollector:
                 # Generate a task
                 task = self.generator.generate_task()
                 logger.info(f"📝 Generated task: {task['description']}")
-                logger.info(f"   Category: {task['category']}, Difficulty: {task['difficulty']}")
+                logger.info(f"   Category: {task['category']}")
                 
                 # Execute the task
                 logger.info(f"🚀 Executing task...")
@@ -220,7 +185,7 @@ class AutoCollector:
                 # Log stats
                 self._log_stats(iteration, task, result)
                 
-                # Random delay between tasks (human-like)
+                # Random delay between tasks
                 delay = random.uniform(5, 15)
                 logger.info(f"⏳ Waiting {delay:.1f}s before next task...")
                 time.sleep(delay)
@@ -230,7 +195,7 @@ class AutoCollector:
                 break
             except Exception as e:
                 logger.error(f"❌ Error in main loop: {e}", exc_info=True)
-                time.sleep(30)  # Wait before retrying
+                time.sleep(30)
     
     def _execute_task(self, task: Dict) -> Dict:
         """Execute a task using the main agent."""
@@ -238,11 +203,7 @@ class AutoCollector:
         
         try:
             start_time = time.time()
-            
-            # Run the task in TRAINING MODE for excellent data quality
-            # This captures screenshots before/after every action
             result = run_task_internal(task['description'], is_training=self.training_mode)
-            
             duration = time.time() - start_time
             
             return {
@@ -261,7 +222,7 @@ class AutoCollector:
             }
     
     def _log_stats(self, iteration: int, task: Dict, result: Dict):
-        """Log statistics to Redis (if available) and local file."""
+        """Log statistics."""
         stats = {
             "iteration": iteration,
             "worker_id": self.worker_id,
@@ -277,16 +238,14 @@ class AutoCollector:
         if self.redis_client:
             try:
                 key = f"stats:{self.worker_id}:{iteration}"
-                self.redis_client.setex(key, 86400, json.dumps(stats))  # Keep for 24h
-                
-                # Increment counters
+                self.redis_client.setex(key, 86400, json.dumps(stats))
                 self.redis_client.incr(f"counter:{self.worker_id}:total")
                 if stats["success"]:
                     self.redis_client.incr(f"counter:{self.worker_id}:success")
                 else:
                     self.redis_client.incr(f"counter:{self.worker_id}:failed")
             except Exception as e:
-                logger.debug(f"Could not save stats to Redis: {e}")
+                pass
         
         # Save to local file
         try:
@@ -294,24 +253,13 @@ class AutoCollector:
             with open(stats_file, "a") as f:
                 f.write(json.dumps(stats) + "\n")
         except Exception as e:
-            logger.debug(f"Could not save stats to file: {e}")
-
+            pass
 
 def main():
     """Entry point."""
-    logger.info("🚀 Starting Automated Data Collector")
-    logger.info(f"   Worker ID: {os.getenv('WORKER_ID', 'default')}")
-    logger.info(f"   Display: {os.getenv('DISPLAY', 'not set')}")
-    logger.info(f"   Training Mode: ENABLED (excellent data quality)")
-    logger.info(f"   Data saved to: data/training_sessions/")
-    
-    # Training mode = True for excellent data quality:
-    # - Screenshots before/after every action (200% coverage)
-    # - Only successful sessions saved
-    # - Data saved to training_sessions folder
+    logger.info("🚀 Starting Automated Data Collector (PPT Specialization)")
     collector = AutoCollector(training_mode=True)
     collector.run_forever()
-
 
 if __name__ == "__main__":
     main()

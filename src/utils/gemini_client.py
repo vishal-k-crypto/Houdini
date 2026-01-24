@@ -42,14 +42,14 @@ class GeminiCLI:
             result = subprocess.run(["gemini", "--version"], check=True, capture_output=True, text=True)
             logger.info(f"Gemini CLI version: {result.stdout.strip()}")
         except FileNotFoundError:
-            raise RuntimeError(
-                "Gemini CLI not found. Install it with:\n"
-                "  npm install -g @google/gemini-cli\n"
-                "Then authenticate with:\n"
-                "  gemini auth"
-            )
+            # Don't crash if CLI misses - just warn (we might be in Docker using Ollama)
+            logger.warning("Gemini CLI not found. Vision executor fallback might be limited.")
+            self.available = False
         except subprocess.CalledProcessError as e:
             logger.warning(f"Gemini CLI check returned error: {e.stderr}")
+            self.available = False
+        else:
+            self.available = True
 
     def generate(self, prompt: str, image_path: Optional[str] = None, retry_count: int = 3, model: Optional[str] = None) -> str:
         """
@@ -70,6 +70,11 @@ class GeminiCLI:
         # Use provided model or default
         model_to_use = model or self.model_name
         
+        # Guard against missing CLI
+        if not getattr(self, 'available', True):
+            logger.error("Gemini CLI not available. Cannot generate text response.")
+            return "ERROR: Gemini CLI not installed"
+
         for attempt in range(retry_count):
             try:
                 start_time = time.time()
