@@ -116,7 +116,7 @@ def predict_click_with_result(
     element_description: str,
     screenshot_path: Optional[str] = None,
     task_context: str = "",
-    timeout: float = 60.0
+    timeout: float = 180.0  # Increased for model download on first run
 ) -> Dict:
     """
     Predict click coordinates using TinyClick in separate venv.

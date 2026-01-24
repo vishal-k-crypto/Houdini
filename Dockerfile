@@ -63,6 +63,17 @@ RUN pip3 install --no-cache-dir transformers==4.48.0 torch accelerate einops tim
 # Copy application code
 COPY . /app/
 
+# Pre-download TinyClick model (Florence-2) to avoid runtime delays
+# This caches the model in the Docker image
+RUN python3 -c "from transformers import AutoProcessor, AutoModelForCausalLM; \
+    import os; \
+    cache_dir = os.path.expanduser('~/.cache/houdini/tinyclick'); \
+    os.makedirs(cache_dir, exist_ok=True); \
+    print('Downloading TinyClick model...'); \
+    AutoProcessor.from_pretrained('Krystianz/TinyClick', cache_dir=cache_dir, trust_remote_code=True); \
+    AutoModelForCausalLM.from_pretrained('Krystianz/TinyClick', cache_dir=cache_dir, trust_remote_code=True); \
+    print('TinyClick model cached successfully')" || echo "Warning: TinyClick model download failed, will retry at runtime"
+
 # Create data directories (including training_sessions for excellent quality data)
 RUN mkdir -p /app/data/screenshots /app/data/replay_sessions /app/data/training_sessions
 

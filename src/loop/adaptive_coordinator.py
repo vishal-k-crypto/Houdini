@@ -578,6 +578,26 @@ Use this analysis to:
 3. Add verification steps if uncertainty is high
 """
         
+        # Get platform-specific context for Linux/Docker vs macOS
+        try:
+            from ..utils.platform_config import get_platform_prompt_context, PLATFORM_CONFIG, get_step_type_rules, get_example_prompts
+            platform_context = get_platform_prompt_context()
+            platform_name = PLATFORM_CONFIG.get("platform_name", "Unknown")
+            step_type_rules = get_step_type_rules()
+            example_prompts = get_example_prompts()
+            hotkey_modifier = PLATFORM_CONFIG.get("hotkey_modifier", "command")
+        except ImportError:
+            platform_context = ""
+            platform_name = "macOS"  # Default
+            step_type_rules = """
+### step_type: "blind" (keyboard-only, no vision needed):
+- Opening apps: ["hotkey:command,space", "type:Safari", "key:return", "wait:2"]
+- URL navigation: ["hotkey:command,l", "type:google.com", "key:return", "wait:2"]
+- Keyboard shortcuts: ["hotkey:command,c"], ["hotkey:command,v"]
+"""
+            example_prompts = ""
+            hotkey_modifier = "command"
+        
         prompt = f"""You are a MACRO PLANNER using HYBRID PLANNING architecture.
 
 CRITICAL ARCHITECTURE:
@@ -585,6 +605,7 @@ CRITICAL ARCHITECTURE:
 - The executor uses your suggested_actions DIRECTLY without calling another LLM
 - This makes execution FAST and DETERMINISTIC
 
+{platform_context}
 {flexibility_context}
 TASK: {task}
 
@@ -604,7 +625,7 @@ TASK: {task}
 }}
 
 ## ACTION FORMAT:
-- Hotkey: "hotkey:command,space" (comma-separated modifiers)
+- Hotkey: "hotkey:{hotkey_modifier},space" (comma-separated modifiers)
 - Type text: "type:Hello World"
 - Press key: "key:return" or "key:escape" or "key:tab"
 - Wait: "wait:1.5" (seconds)
@@ -612,11 +633,7 @@ TASK: {task}
 
 ## STEP TYPE RULES:
 
-### step_type: "blind" (keyboard-only, no vision needed):
-- Opening apps: ["hotkey:command,space", "type:Safari", "key:return", "wait:2"]
-- URL navigation: ["hotkey:command,l", "type:google.com", "key:return", "wait:2"]
-- Keyboard shortcuts: ["hotkey:command,c"], ["hotkey:command,v"]
-- Typing after click: ["type:search query", "key:return"]
+{step_type_rules}
 
 ### step_type: "vision" (requires finding/clicking UI element):
 - Website search boxes: ["click:search box at top of page"]
@@ -624,32 +641,7 @@ TASK: {task}
 - Buttons/Links: ["click:Submit button", "click:Sign In link"]
 - CRITICAL: Be SPECIFIC about which element! Don't say "click search", say "click:search input field on the webpage"
 
-## COMPLETE EXAMPLES:
-
-### Task: "Open YouTube and search for Python tutorials"
-{{
-  "macro_steps": [
-    {{"step": "Launch Safari browser", "step_type": "blind", "context": "Safari window visible", "suggested_actions": ["hotkey:command,space", "type:Safari", "key:return", "wait:2"]}},
-    {{"step": "Navigate to YouTube", "step_type": "blind", "context": "YouTube homepage loaded", "suggested_actions": ["hotkey:command,l", "type:youtube.com", "key:return", "wait:3"]}},
-    {{"step": "Click the YouTube search box", "step_type": "vision", "context": "Search box focused", "suggested_actions": ["click:search input box at top of YouTube page"]}},
-    {{"step": "Type search query", "step_type": "blind", "context": "Search results displayed", "suggested_actions": ["type:Python tutorials", "key:return", "wait:2"]}},
-    {{"step": "Click first video", "step_type": "vision", "context": "Video playing", "suggested_actions": ["click:first video thumbnail in search results"]}}
-  ],
-  "expected_outcome": "Python tutorials video is playing on YouTube",
-  "success_criteria": "Video player is visible and video is playing"
-}}
-
-### Task: "Send a WhatsApp message to John saying hello"
-{{
-  "macro_steps": [
-    {{"step": "Open WhatsApp", "step_type": "blind", "context": "WhatsApp window visible", "suggested_actions": ["hotkey:command,space", "type:WhatsApp", "key:return", "wait:2"]}},
-    {{"step": "Search for John contact", "step_type": "blind", "context": "Search results visible", "suggested_actions": ["hotkey:command,f", "type:John", "wait:0.5"]}},
-    {{"step": "Click John's chat", "step_type": "vision", "context": "John's chat open", "suggested_actions": ["click:John in the contact/chat list"]}},
-    {{"step": "Type and send message", "step_type": "blind", "context": "Message sent", "suggested_actions": ["type:hello", "key:return"]}}
-  ],
-  "expected_outcome": "Message 'hello' sent to John in WhatsApp",
-  "success_criteria": "Message appears in chat with sent status"
-}}
+{example_prompts}
 
 ⚠️ CRITICAL RULES:
 1. EVERY step MUST have suggested_actions - the executor depends on them!
