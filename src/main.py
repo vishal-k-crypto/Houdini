@@ -19,7 +19,12 @@ def capture_screen() -> bytes:
         with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
             temp_path = f.name
         
-        subprocess.run(["screencapture", "-x", "-C", temp_path], capture_output=True, timeout=5)
+        if sys.platform == "linux":
+            # Linux (Docker) - use scrot
+            subprocess.run(["scrot", temp_path], capture_output=True, timeout=5)
+        else:
+            # macOS - use screencapture
+            subprocess.run(["screencapture", "-x", "-C", temp_path], capture_output=True, timeout=5)
         
         if Path(temp_path).exists():
             with open(temp_path, 'rb') as f:
@@ -42,7 +47,7 @@ def run_loop_mode(args):
     from .ui.thinking_window import start_thinking_window, stop_thinking_window
     
     # Start thinking window if enabled
-    thinking_window_enabled = not args.no_thinking_window
+    thinking_window_enabled = args.thinking_window
     if thinking_window_enabled:
         start_thinking_window()
         logger.info("💭 Thinking window started")
@@ -235,8 +240,8 @@ def main():
     parser.add_argument("--supervisor-mode", default="background",
                         choices=["background", "checkpoint"],
                         help="Supervisor mode: background (parallel) or checkpoint (after batches)")
-    parser.add_argument("--no-thinking-window", action="store_true",
-                        help="Disable the floating thinking window")
+    parser.add_argument("--thinking-window", action="store_true", default=False,
+                        help="Enable the floating thinking window (experimental)")
     
     # Architecture mode
     parser.add_argument("--use-adaptive", action="store_true", default=True,

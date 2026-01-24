@@ -14,13 +14,15 @@ services:
       - WORKER_ID=collector-1
       - REDIS_URL=redis://redis:6379
       - DISPLAY=:99
+      - OLLAMA_ENDPOINT=http://host.docker.internal:11434
     volumes:
       # Persist collected data to host
       - ./data:/app/data
     depends_on:
       - redis
     restart: unless-stopped
-
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
   # Additional workers (scale with: docker compose up -d --scale collector=3)
   # collector-2:
   #   build: .

@@ -4,13 +4,13 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
+    python3-tk \
+    python3-dev \
     xvfb \
     x11vnc \
-    chromium-browser \
-    chromium-chromedriver \
     xdotool \
     wmctrl \
     scrot \
@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     git \
     openbox \
+    x11-utils \
     fonts-liberation \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -31,6 +32,14 @@ RUN apt-get update && apt-get install -y \
     libxrandr2 \
     libgbm1 \
     libasound2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Chromium browser (package name varies by Ubuntu version)
+RUN apt-get update && (apt-get install -y chromium-browser || apt-get install -y chromium) \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install LibreOffice Impress (for presentation tasks)
+RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-impress \
     && rm -rf /var/lib/apt/lists/*
 
 # Setup virtual display
@@ -47,6 +56,10 @@ RUN pip3 install --no-cache-dir -r requirements-docker.txt
 # Install additional automation packages
 RUN pip3 install --no-cache-dir redis fake-useragent requests beautifulsoup4 rich textual
 
+# Install TinyClick dependencies for vision-based UI automation
+# This enables element detection via Samsung's Florence-2 model
+RUN pip3 install --no-cache-dir transformers==4.48.0 torch accelerate einops timm
+
 # Copy application code
 COPY . /app/
 
@@ -58,3 +71,4 @@ COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
+CMD ["python3", "-m", "src.auto_collector"]
