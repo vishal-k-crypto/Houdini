@@ -1,108 +1,92 @@
-# Core
+# ========================================
+# Houdini Agent - Requirements
+# ========================================
+
+# -------------------------------------------------
+# Core Dependencies
+# -------------------------------------------------
 rich>=13.0.0
 pyautogui>=0.9.54
-pytesseract>=0.3.10
 pillow>=10.0.0
-llama-cpp-python>=0.2.90
-playwright>=1.48.0
+pydantic>=2.0.0
 python-dotenv>=1.0.0
+
+# -------------------------------------------------
+# AI/ML Models
+# -------------------------------------------------
+# Google Gemini API (for cloud planning)
 google-genai>=0.2.0
 
-# Data Validation
-pydantic>=2.0.0
+# Local LLM inference (for supervisor)
+llama-cpp-python>=0.2.90
 
-# Vector Database for Lesson Store (RAG-based learning)
-# Using FAISS for efficient similarity search (ChromaDB has dependency conflicts)
+# Transformers for TinyClick & Vision Models
+transformers>=4.36.0
+accelerate>=0.25.0
+
+# -------------------------------------------------
+# Computer Vision
+# -------------------------------------------------
+# OCR for text extraction
+pytesseract>=0.3.10
+
+# YOLO for UI element detection (OmniParser)
+ultralytics>=8.0.0
+
+# -------------------------------------------------
+# Browser Automation
+# -------------------------------------------------
+playwright>=1.48.0
+
+# -------------------------------------------------
+# Vector Database & Embeddings
+# -------------------------------------------------
+# FAISS for similarity search (RAG-based learning)
 faiss-cpu>=1.7.0
 
-# NOTE: Ollama is required but installed separately (not a Python package)
-# Install from: https://ollama.ai or run: brew install ollama
+# -------------------------------------------------
+# State Management & Graph Execution
+# -------------------------------------------------
+# LangGraph for agent state machines
+langgraph>=0.2.0
+langchain-core>=0.3.0
 
-# macOS Accessibility API (native integration)
+# -------------------------------------------------
+# UI & Terminal
+# -------------------------------------------------
+# Terminal UI framework (thinking window)
+textual>=0.45.0
+
+# -------------------------------------------------
+# Math & Science
+# -------------------------------------------------
+numpy>=1.24.0
+scipy>=1.11.0
+
+# -------------------------------------------------
+# macOS Accessibility (macOS only)
+# -------------------------------------------------
 pyobjc-core>=10.0
 pyobjc-framework-Cocoa>=10.0
 pyobjc-framework-Quartz>=10.0
 pyobjc-framework-ApplicationServices>=10.0
-
-# Human-like cursor control
-numpy>=1.24.0
-scipy>=1.11.0
-
-# Probability Model for flexible task execution (NEW)
-# These enable intelligent handling of incomplete/ambiguous task specs
-scikit-fuzzy>=0.5.0    # Fuzzy logic for macro-micro spectrum
-pgmpy>=1.0.0           # Bayesian networks for probabilistic reasoning
-networkx>=3.0          # Required by pgmpy
-
-# Execution Confidence Model (NEW)
-# Enables confidence-based action execution with calibration and learning
-# Uses built-in algorithms inspired by:
-# - uncertainty-toolbox: calibration metrics
-# - uncertainty-calibration: Platt scaling, isotonic regression
-# - mabwiser: Thompson Sampling for exploration/exploitation
-# No additional packages needed - uses numpy which is already included
-
-# LangGraph for state management and cyclic agent execution
-# Replaces custom loop coordinators with declarative graph-based execution
-# Benefits: checkpointing, human-in-the-loop, crash recovery, visualization
-langgraph>=0.2.0
-langchain-core>=0.3.0
-
-# Textual TUI Framework (replaces Tkinter for thinking window)
-# Beautiful terminal UI with hacker aesthetic
-# Provides: rich text, interactive widgets, CSS-like styling
-textual>=0.45.0
-
-# ============================================================
-# LOCAL VISION LOCALIZER - Hybrid Apple Vision + UI-TARS MLX
-# ============================================================
-# Precise pixel localization using native macOS frameworks + local MLX models
-# Benefits:
-# - Hardware-accelerated on Apple Silicon Neural Engine
-# - Sub-millisecond detection for standard UI shapes
-# - No cloud latency - runs entirely on-device
-# - Semantic precision for niche tools (Adobe, Electron apps)
-
-# Apple Vision Framework (included in pyobjc packages above)
-# Already have: pyobjc-framework-Quartz, pyobjc-framework-Cocoa
-# Add Vision framework support:
 pyobjc-framework-Vision>=10.0
 
-# MLX-VLM for UI-TARS (Apple Silicon optimized) - OPTIONAL
-# Semantic grounding for complex/non-accessible UI elements
-# To enable: pip install mlx-vlm
-# This will install MLX and optimized vision-language models
-# Recommended model: mlx-community/UI-TARS-7B-SFT-4bit (~4GB)
+# -------------------------------------------------
+# Optional: Apple Silicon MLX Vision
+# -------------------------------------------------
+# For running UI-TARS locally on Apple Silicon
+# Uncomment if you have Apple Silicon Mac:
 # mlx-vlm>=0.1.0
 
-# ============================================================
-# OMNIPARSER V2 - YOLO + Florence-2 Vision
-# ============================================================
-# Microsoft OmniParser V2 for high-accuracy UI element detection
-# Benefits:
-# - YOLOv8-based detection: fast, precise bounding boxes
-# - Florence-2 captioning: semantic understanding of icons/buttons
-# - 60% latency reduction vs V1
-# - Improves GPT-4V action accuracy: 70% → 93%
-# - MPS (Metal) acceleration on Apple Silicon
+# -------------------------------------------------
+# Optional: Web Scraping
+# -------------------------------------------------
+beautifulsoup4>=4.12.0
+requests>=2.31.0
 
-# Core OmniParser dependencies
-ultralytics>=8.0.0        # YOLOv8 for icon detection
-
-# Optional: Florence-2 for semantic captioning
-# Increases accuracy but adds ~2GB model download
-# transformers>=4.36.0    # Florence-2 captioning
-
-# ============================================================
-# TINYCLICK - Fast Pixel-Precise Click Prediction (~250ms)
-# ============================================================
-# Samsung's TinyClick model for GUI automation:
-# - Fine-tuned Florence-2 architecture (0.27B params)
-# - 73.8% accuracy on Screenspot benchmark
-# - 160x faster than VLM cloud calls
-# - MPS (Metal) acceleration on Apple Silicon
-#
-# To enable: pip install transformers accelerate torch
-# Model auto-downloads from HuggingFace (~600MB)
-transformers>=4.36.0
-accelerate>=0.25.0
+# -------------------------------------------------
+# Development & Testing (Optional)
+# -------------------------------------------------
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0

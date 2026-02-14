@@ -1,311 +1,429 @@
-# Houdini Agent (Remake)
+<div align="center">
 
-Refactored implementation based on Agent-S patterns with **intelligent self-evolving prompts**.
+# 🤖 Houdini Agent
 
-## 🎯 Key Features
+**AI-Powered macOS Automation with Self-Evolving Intelligence**
 
-- **Fast Batch Execution**: 10-100x faster with blind action batching
-- **Smart Planning**: AI-powered task decomposition
-- **Self-Evolving Prompts**: Automatically learns from failures and improves
-- **Comprehensive Monitoring**: Track success rates and system performance
-- **Advanced Cursor Movement**: macOS keyboard shortcuts for 10-100x speed improvement
-- **Human-Like Text Manipulation**: Efficient text editing like a power user
-- **💭 Thinking Window**: Real-time visualization of AI reasoning (like Claude/ChatGPT thinking models)
-- **📁 Context-Aware Memory**: Long-term memory of user files and resources (see below)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![macOS](https://img.shields.io/badge/platform-macOS-black.svg)](https://www.apple.com/macos/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## Components
-- **Planner**: Gemini 3 Pro (CLI) - Task decomposition with evolved prompts
-- **Executor**: Agent-S (Worker + ACI + Reflection) - Blind & vision execution
-- **Supervisor**: Qwen 2.5 7B (Local via llama.cpp) - Validation & quality control
-- **Prompt Evolution System**: Automatic prompt improvement based on feedback
+<p align="center">
+  <strong>Automate complex tasks on macOS using local AI models with vision capabilities</strong>
+</p>
+
+[Features](#-features) • [Quick Start](#-quick-start) • [Installation](#-installation) • [Usage](#-usage) • [Architecture](#-architecture)
+
+</div>
+
+---
+
+## 🎯 What is Houdini Agent?
+
+Houdini Agent is an intelligent automation system for macOS that uses **local AI models** to:
+
+- 👁️ **See** your screen using computer vision
+- 🧠 **Plan** complex multi-step tasks
+- 🖱️ **Execute** actions (click, type, scroll) like a human
+- 📚 **Learn** from experience and improve over time
+- 💭 **Think** out loud with a real-time reasoning window
+
+Unlike cloud-based solutions, Houdini runs **entirely on your machine** — no data leaves your computer.
+
+---
+
+## ✨ Features
+
+### 🧠 Multi-Agent Architecture
+| Component | Model | Purpose |
+|-----------|-------|---------|
+| **Planner** | Ollama (Qwen 3 Coder) | Breaks tasks into executable steps |
+| **Executor** | Local Vision + Accessibility | Performs screen actions |
+| **Supervisor** | llama.cpp (Qwen 2.5 7B) | Validates and corrects actions |
+
+### 🚀 Key Capabilities
+
+- **🖥️ Screen Understanding** - Uses YOLO + OCR + OmniParser to understand any UI
+- **⚡ Fast Execution** - Native macOS accessibility APIs for 10-100x speed
+- **🧠 Self-Improving** - Learns from failures and adapts prompts automatically
+- **💭 Thinking Window** - Real-time visualization of AI reasoning
+- **📊 Replay & Debug** - Time-travel through execution history
+- **🔒 Privacy-First** - All AI models run locally on your machine
+
+---
 
 ## 🚀 Quick Start
 
-### Basic Usage
-```bash
-python -m src.main --task "Open Calculator and calculate 2 + 2"
-python -m src.main --task "Search for Python tutorials in Safari"
-```
-
-### View System Statistics
-```bash
-python -m src.utils.prompt_stats
-```
-
-### Run Examples
-```bash
-python examples/prompt_system_example.py
-```
-
-## 📊 Prompt Evolution System
-
-The agent uses an **internal prompting system** similar to modern AI chat models, with the added capability to **automatically evolve and improve** based on real-world usage:
-
-- **Automatic Learning**: Learns from failures (>20% failure rate triggers evolution)
-- **Pattern Recognition**: Identifies common issues and generates improvements
-- **Self-Improving**: Prompts evolve without manual intervention
-- **Transparent**: All evolutions logged and reviewable
-
-### How It Works
-
-1. Execute tasks → 2. Record feedback → 3. Detect patterns → 4. Evolve prompts → 5. Improve performance
-
-```
-Initial Success Rate: 70%  →  After Evolution: 90%+
-```
-
-See [PROMPT_SYSTEM.md](PROMPT_SYSTEM.md) for complete documentation.
-
-## 📁 Context-Aware Memory
-
-The agent has **long-term memory** of your files and resources. When you say "Send the report to John," it knows where "report" lives based on previous successful tasks.
-
-### Features
-
-- **Learns from Usage**: Every successful task teaches the agent about your files
-- **Semantic Search**: Uses FAISS embeddings to find related resources
-- **Ambiguous Reference Resolution**: "the report" → `~/Documents/Reports/Q4_report.pdf`
-- **Contact Memory**: Remembers who you communicate with
-- **Planner Integration**: Automatically enriches tasks with resolved context
-
-### Example
+### 1. Clone & Setup
 
 ```bash
-# First time: "create quarterly report in Documents/Reports folder"
-# Agent learns: "report" → ~/Documents/Reports/quarterly_report.pdf
+# Clone the repository
+git clone https://github.com/yourusername/houdini-agent.git
+cd houdini-agent
 
-# Later: "send the report to marketing"
-# Agent knows: report = ~/Documents/Reports/quarterly_report.pdf
-```
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
-### Data Storage
-
-Context memory is stored in `data/context_memory/` and bootstraps from `feedback_log.json`.
-
-## 📁 Project Structure
-
-```
-houdini-agent/
-├── prompts/                     # Self-evolving system prompts
-│   ├── planner_prompt.md
-│   ├── executor_prompt.md
-│   └── supervisor_prompt.md
-├── src/
-│   ├── planner/                # Task planning
-│   ├── agents/                 # Execution agents
-│   ├── supervisor/             # Validation
-│   └── utils/
-│       ├── prompt_loader.py    # Prompt management
-│       ├── prompt_evolution.py # Evolution engine
-│       ├── context_memory.py   # Long-term file/resource memory
-│       └── prompt_stats.py     # Statistics
-├── data/
-│   ├── feedback_log.json       # Execution feedback
-│   ├── context_memory/         # File/resource context memory
-│   └── prompt_evolution_log.json # Evolution history
-└── examples/                   # Usage examples
-```
-
-## Setup
-
-### 1. Install Dependencies
-```bash
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Configure API Keys
-Ensure 'gemini' CLI is in path or set up API keys:
+### 2. Install Ollama (Required)
+
 ```bash
-export GEMINI_API_KEY="your-key-here"
+# macOS
+brew install ollama
+
+# Or download from https://ollama.ai
 ```
 
-### 3. (Optional) Setup Local Supervisor
-Download Qwen model for local validation:
+### 3. Pull Required Models
+
 ```bash
-# Model should be at: ./models/qwen2.5-7b-instruct-q5_k_m.gguf
+# Pull the planning model (recommended)
+ollama pull qwen2.5-coder:14b
+
+# Or use smaller model for faster inference
+ollama pull qwen2.5-coder:7b
 ```
 
-### 4. Run Your First Task
+### 4. Configure Environment
+
 ```bash
-python -m src.main --task "open safari"
+# Copy the example environment file
+cp .env.example .env
+
+# Edit .env with your settings (optional)
+# Most features work without any API keys!
 ```
 
-## 📚 Documentation
+### 5. Run Your First Task
 
-- **[THINKING_WINDOW.md](THINKING_WINDOW.md)** - Floating window showing real-time AI thinking
-- **[CURSOR_MOVEMENT_GUIDE.md](CURSOR_MOVEMENT_GUIDE.md)** - Complete guide to macOS shortcuts (10-100x faster!)
-- **[PROMPT_SYSTEM.md](PROMPT_SYSTEM.md)** - Complete prompt evolution documentation
-- **[IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)** - What was built and how
-- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Quick commands and troubleshooting
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture diagrams
+```bash
+# Basic task
+python -m src.main --task "Open Calculator and calculate 15 * 23"
+
+# With thinking window
+python -m src.main --task "Open Safari and search for Python tutorials" --thinking-window
+
+# Complex multi-step task
+python -m src.main --task "Create a new note in Notes app with today's date and a shopping list"
+```
+
+---
+
+## 📦 Installation
+
+### Prerequisites
+
+- **macOS 12+** (Monterey or later)
+- **Python 3.10+**
+- **Ollama** installed and running
+- **Accessibility Permissions** (granted on first run)
+
+### Full Installation
+
+```bash
+# 1. Install system dependencies
+brew install tesseract  # For OCR
+brew install ollama     # For local LLMs
+
+# 2. Clone and setup
+git clone https://github.com/yourusername/houdini-agent.git
+cd houdini-agent
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 3. Install Playwright browsers
+playwright install chromium
+
+# 4. Download YOLO model (for UI detection)
+# This happens automatically on first run, or manually:
+# wget https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt
+
+# 5. Grant permissions
+# First run will prompt for Accessibility and Screen Recording permissions
+```
+
+### Optional: Local Vision Models
+
+For better performance on Apple Silicon:
+
+```bash
+# Install MLX-VLM for UI-TARS
+pip install mlx-vlm
+
+# Models are auto-downloaded on first use
+# ~4GB for UI-TARS-7B model
+```
+
+---
+
+## 🎮 Usage
+
+### Basic Usage
+
+```bash
+# Simple tasks
+python -m src.main --task "Open System Preferences"
+python -m src.main --task "Take a screenshot"
+python -m src.main --task "Open Terminal and run 'ls -la'"
+```
+
+### Advanced Options
+
+```bash
+# Enable thinking window (see AI reasoning in real-time)
+python -m src.main --task "Your task" --thinking-window
+
+# Use specific Ollama model
+python -m src.main --task "Your task" --model qwen2.5-coder:14b
+
+# Training mode (saves execution data for analysis)
+python -m src.main --task "Your task" --train
+
+# Disable enhanced executor (fallback to basic PyAutoGUI)
+python -m src.main --task "Your task" --no-enhanced
+```
+
+### Replay & Debug
+
+```bash
+# List all sessions
+python -m src.main --replay-list
+
+# Replay a specific session
+python -m src.main --replay --replay-session <session_id>
+
+# Generate debug report
+python -m src.main --debug-report
+```
+
+### Programmatic Usage
+
+```python
+from src.main import run_task_internal
+
+# Run task programmatically
+result = run_task_internal(
+    task_description="Open Calculator and add 5 + 3",
+    is_training=False
+)
+
+print(f"Success: {result['success']}")
+print(f"Session ID: {result['session_id']}")
+```
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        User Task                            │
+└───────────────────────┬─────────────────────────────────────┘
+                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│  📋 Planner (Ollama Qwen)                                   │
+│  └── Breaks task into macro/micro steps                     │
+└───────────────────────┬─────────────────────────────────────┘
+                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│  🎯 Adaptive Loop Coordinator                               │
+│  ├── Macro Planning (high-level strategy)                   │
+│  └── Micro Execution (pixel-precise actions)                │
+└───────────────────────┬─────────────────────────────────────┘
+                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│  👁️ Vision System                                           │
+│  ├── OmniParser V2 (YOLO + OCR)                            │
+│  ├── TinyClick (fast element detection)                     │
+│  └── Accessibility API (macOS native)                       │
+└───────────────────────┬─────────────────────────────────────┘
+                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│  ✋ Executor                                                │
+│  ├── Blind Actions (keyboard shortcuts)                     │
+│  └── Vision Actions (element interaction)                   │
+└───────────────────────┬─────────────────────────────────────┘
+                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│  ✅ Supervisor (llama.cpp Qwen 2.5 7B)                      │
+│  └── Validates actions and provides feedback                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🧩 Project Structure
+
+```
+houdini-agent/
+├── src/
+│   ├── main.py                 # Entry point
+│   ├── planner/                # Task planning agents
+│   ├── agents/                 # Execution agents
+│   ├── supervisor/             # Validation & feedback
+│   ├── loop/                   # Execution coordinators
+│   ├── ui/                     # Thinking window
+│   ├── utils/                  # Utilities
+│   └── replay/                 # Replay & debug
+├── prompts/                    # System prompts (self-evolving)
+├── examples/                   # Usage examples
+├── data/                       # Runtime data (gitignored)
+├── models/                     # Local models (gitignored)
+├── requirements.txt            # Python dependencies
+├── .env.example               # Environment template
+└── README.md                  # This file
+```
+
+---
+
+## ⚙️ Configuration
+
+### Environment Variables
+
+Create a `.env` file from `.env.example`:
+
+```bash
+# Required for cloud planning
+GEMINI_API_KEY=your_key_here  # Optional - local models work without this
+
+# Local model path
+MODEL_PATH=./models/qwen2.5-7b-instruct-q5_k_m.gguf
+
+# Default Ollama model
+OLLAMA_MODEL=qwen2.5-coder:14b
+
+# Logging
+LOG_LEVEL=INFO
+
+# Features
+ENABLE_THINKING_WINDOW=false
+```
+
+### Grant macOS Permissions
+
+On first run, macOS will prompt for:
+
+1. **Accessibility** - Control your computer
+2. **Screen Recording** - See the screen for vision
+
+Go to **System Settings > Privacy & Security** to grant these permissions.
+
+---
 
 ## 🎓 Examples
 
-### Search the Web
-```bash
-python -m src.main --task "search for AI news in safari"
-```
-
 ### Open Applications
 ```bash
-python -m src.main --task "open calculator"
+python -m src.main --task "Open Safari and navigate to github.com"
+python -m src.main --task "Launch Calculator and compute 123 * 456"
 ```
 
-### Complex Tasks with Cursor Movement (Lightning Fast!)
+### Text Editing
 ```bash
-# Replace text efficiently (uses Cmd+A instead of 50 backspaces!)
-python -m src.main --task "open notes and replace all text with 'Hello World'"
-
-# Navigate and edit URL (uses Cmd+L auto-select)
-python -m src.main --task "open safari, navigate to youtube.com"
-
-# Copy entire document (uses Cmd+A + Cmd+C)
-python -m src.main --task "open notes and copy all content"
+python -m src.main --task "Open Notes and write a todo list"
+python -m src.main --task "Select all text in the current document and copy it"
 ```
 
-See [CURSOR_MOVEMENT_GUIDE.md](CURSOR_MOVEMENT_GUIDE.md) for all keyboard shortcuts.
-
-## � Thinking Window
-
-The agent includes a **floating thinking window** that displays real-time AI reasoning, similar to Claude's thinking models or ChatGPT Mac app.
-
-### Features
-- **Real-time display** of planner, executor, and supervisor thinking
-- **Always-on-top** floating window with macOS-style design
-- **Color-coded messages** by component (Planner, Executor, Supervisor)
-- **Draggable and collapsible** for minimal distraction
-- **Status indicators** showing current agent state
-
-### Usage
+### System Control
 ```bash
-# Enable thinking window (default in loop mode)
-python -m src.main --task "your task" --loop
-
-# Disable if preferred
-python -m src.main --task "your task" --loop --no-thinking-window
-
-# Demo the thinking window
-python demo_thinking_window.py
+python -m src.main --task "Take a screenshot and save it to Desktop"
+python -m src.main --task "Open System Settings and navigate to Display"
 ```
 
-See [THINKING_WINDOW.md](THINKING_WINDOW.md) for complete documentation.
-
-## �📊 Monitoring
-
-### View Statistics
+### Multi-Step Workflows
 ```bash
-python -m src.utils.prompt_stats
+python -m src.main --task "Create a new folder on Desktop called 'Projects' and open it in Finder"
 ```
 
-Shows:
-- Overall success rate
-- Per-component performance
-- Recent evolutions
-- Recent feedback
-- Recommendations
+---
 
-### Programmatic Access
-```python
-from src.utils.prompt_evolution import prompt_evolution
+## 🐛 Troubleshooting
 
-# Get statistics
-stats = prompt_evolution.get_statistics()
-print(f"Success rate: {stats['components']['planner']['success_rate']:.1%}")
+### Common Issues
 
-# View recent learnings
-learnings = prompt_evolution.get_recent_learnings("executor", count=5)
-```
-
-## 🔧 Configuration
-
-Customize evolution behavior in `src/utils/prompt_config.py`:
-
-```python
-EVOLUTION_CONFIG = {
-    "min_failures_for_evolution": 5,
-    "failure_rate_threshold": 0.2,  # 20%
-    "failure_rate_window": 100,
-}
-
-COMPONENT_CONFIG = {
-    "planner": {"enabled": True},
-    "executor": {"enabled": True},
-    "supervisor": {"enabled": True}
-}
-```
-
-## 🎯 How Prompt Evolution Works
-
-### 1. Feedback Collection (Automatic)
-Every task execution is tracked:
-- Success/failure status
-- Execution time
-- Error types and details
-- Actions taken
-
-### 2. Pattern Analysis
-When failure rate exceeds 20%:
-- Group similar errors
-- Identify common patterns
-- Analyze root causes
-
-### 3. Automatic Evolution
-System generates improvements:
-- Updates prompt files
-- Adds specific guidance
-- Includes learned examples
-- Logs evolution history
-
-### 4. Immediate Application
-Next execution uses evolved prompts automatically.
-
-## 🏆 Success Metrics
-
-| Component | Target | Actual (after evolution) |
-|-----------|--------|--------------------------|
-| Planner | 90% | 95%+ ✅ |
-| Executor | 90% | 90%+ ✅ |
-| Supervisor | 85% | 91%+ ✅ |
-
-## 🚧 Troubleshooting
-
-### No evolution happening?
-- Need more executions (min 10)
-- Need higher failure rate (>20%)
-- Check config: `python -m src.utils.prompt_stats`
-
-### View prompt info?
-```python
-from src.utils.prompt_loader import prompt_loader
-print(prompt_loader.get_all_prompts_info())
-```
-
-### Reset prompts?
+**Permission Denied**
 ```bash
-git checkout prompts/*.md
+# Grant Accessibility permissions in System Settings
+# System Settings > Privacy & Security > Accessibility
 ```
+
+**Ollama Not Found**
+```bash
+# Make sure Ollama is running
+ollama serve
+
+# Or install it
+brew install ollama
+```
+
+**Model Not Found**
+```bash
+# Pull the required model
+ollama pull qwen2.5-coder:14b
+```
+
+**Import Errors**
+```bash
+# Reinstall dependencies
+pip install -r requirements.txt
+```
+
+### Getting Help
+
+- Check [issues](https://github.com/yourusername/houdini-agent/issues)
+- Run with debug logging: `LOG_LEVEL=DEBUG python -m src.main --task "..."`
+- Generate debug report: `python -m src.main --debug-report`
+
+---
+
+## 🗺️ Roadmap
+
+- [ ] Windows & Linux support
+- [ ] Browser extension for web automation
+- [ ] Voice command interface
+- [ ] Multi-monitor support
+- [ ] Custom plugin system
+- [ ] Cloud sync for learned patterns
+
+---
 
 ## 🤝 Contributing
 
-The prompt evolution system is designed to be extensible:
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-1. Add new error types in `prompt_evolution.py`
-2. Add new patterns in `prompt_config.py`
-3. Customize evolution templates
-4. Add new monitoring metrics
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
-## 📝 License
+---
 
-[Your License Here]
+## 📜 License
 
-## 🎉 What Makes This Special?
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-Unlike traditional automation systems with hardcoded rules, Houdini Agent:
+---
 
-✅ **Learns from experience** - Automatically improves based on real usage  
-✅ **Self-documents** - Evolution notes explain what was learned and why  
-✅ **Transparent** - Full history of improvements available  
-✅ **Configurable** - Adjust learning parameters to your needs  
-✅ **Production-ready** - Built-in monitoring and statistics  
+## 🙏 Acknowledgments
 
-The system operates like modern AI chat models with internal prompts, but with automatic evolution capabilities!
+- [Ollama](https://ollama.ai) - Local LLM inference
+- [OmniParser](https://github.com/microsoft/OmniParser) - Screen parsing
+- [TinyClick](https://github.com/Samsung/TinyClick) - GUI automation
+- [LangGraph](https://github.com/langchain-ai/langgraph) - Agent orchestration
+- [Agent-S](https://github.com/simular-ai/Agent-S) - Inspiration for architecture
+
+---
+
+<div align="center">
+
+**⭐ Star this repo if you find it useful!**
+
+Made with ❤️ by the Houdini Agent team
+
+</div>

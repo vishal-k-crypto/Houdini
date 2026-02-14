@@ -1,4 +1,6 @@
+# ========================================
 # Python
+# ========================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -20,29 +22,129 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# ========================================
+# Virtual Environments
+# ========================================
 .venv/
 venv/
 ENV/
 env/
+env.bak/
+venv.bak/
+.penv/
 
-# IDEs
+# ========================================
+# IDE & Editors
+# ========================================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+*.sublime-*
+*.iml
 
+# ========================================
 # macOS
+# ========================================
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
-# Data files
-data/screenshots/
+# ========================================
+# Sensitive Configuration
+# ========================================
+.env
+.env.local
+.env.*.local
+secrets.yaml
+secrets.yml
+secrets.json
+*.key
+*.pem
+*.crt
+
+# ========================================
+# Data Files (Generated/Runtime)
+# ========================================
+data/screenshots/*
+!data/screenshots/.gitkeep
+data/replay_sessions/*
+!data/replay_sessions/.gitkeep
+data/training_sessions/*
+!data/training_sessions/.gitkeep
+data/debug_reports/*
+!data/debug_reports/.gitkeep
+data/context_memory/*
+!data/context_memory/.gitkeep
+data/lessons_db/*
+!data/lessons_db/.gitkeep
 data/*.json
+data/*.jsonl
+data/*.log
+runs/*
+!runs/.gitkeep
 
-# Logs
+# ========================================
+# Model Files (Large binary files)
+# ========================================
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.gguf
+*.bin
+models/*
+!models/.gitkeep
+
+# ========================================
+# Logs & Temporary Files
+# ========================================
 *.log
-
-# Temporary files
 *.tmp
 temp/
+tmp/
+*.bak
+*.backup
+nohup.out
+
+# ========================================
+# Testing & Coverage
+# ========================================
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# ========================================
+# Jupyter Notebook
+# ========================================
+.ipynb_checkpoints
+*.ipynb
+
+# ========================================
+# Documentation Build
+# ========================================
+docs/_build/
+site/
+
+# ========================================
+# Docker
+# ========================================
+docker-compose.override.yml
+
+# ========================================
+# Misc
+# ========================================
+debug_output.txt
+*.pid
