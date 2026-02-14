@@ -101,6 +101,10 @@ runs/*
 models/*
 !models/.gitkeep
 
+# YOLO model (auto-downloaded on first run)
+yolov8n.pt
+yolov8*.pt
+
 # ========================================
 # Logs & Temporary Files
 # ========================================
