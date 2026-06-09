@@ -26,6 +26,8 @@ Think of it as an AI intern that can:
 
 ---
 
+<a id="features"></a>
+
 ## ✨ Features
 
 ### 🧠 Multi-Agent Architecture
@@ -46,6 +48,8 @@ Think of it as an AI intern that can:
 - **🔒 Privacy-First** — All AI models run locally; zero cloud dependency
 
 ---
+
+<a id="quick-start"></a>
 
 ## 🚀 Quick Start
 
@@ -74,6 +78,8 @@ python -m src.main --task "Open Safari and search for Python tutorials" --thinki
 ```
 
 ---
+
+<a id="architecture"></a>
 
 ## 🏗️ Architecture
 
