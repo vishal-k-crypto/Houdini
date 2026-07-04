@@ -335,16 +335,32 @@ def health():
 def list_providers():
     """List all registered providers and which ones are available."""
     available = registry.detect_available()
-    return {
-        "providers": [
+    providers = []
+    for pid in registry.list_providers():
+        adapter_class = registry.get(pid)
+        models = []
+        if adapter_class is not None:
+            # list_models() is an instance method; show the default model instead.
+            default_model = getattr(adapter_class, "DEFAULT_MODEL", None)
+            if default_model:
+                models = [default_model]
+            # If the provider is available, try to get its live model list.
+            if pid in available:
+                try:
+                    instance = registry.create(pid)
+                    models = instance.list_models() or models
+                except Exception:
+                    pass
+        providers.append(
             {
                 "id": pid,
                 "available": pid in available,
                 "details": available.get(pid, {}),
-                "models": registry.get(pid).list_models() if registry.get(pid) else [],
+                "models": models,
             }
-            for pid in registry.list_providers()
-        ],
+        )
+    return {
+        "providers": providers,
         "default": get_default_provider(),
     }
 

@@ -1,1 +1,0 @@
-import{t as b}from"./Dt5TU4Rc.js";import{C as A,l as C}from"./DUGLEWLU.js";function S(i,h,t,a,f,r){var g=i[A];if(C||g!==t||g===void 0){var o=b(t,a,r);(!C||o!==i.getAttribute("class"))&&(o==null?i.removeAttribute("class"):i.className=o),i[A]=t}else if(r&&f!==r)for(var u in r){var l=!!r[u];(f==null||l!==!!f[u])&&i.classList.toggle(u,l)}return r}export{S as s};

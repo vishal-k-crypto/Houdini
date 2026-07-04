@@ -158,6 +158,7 @@ debug_output.txt
 # ========================================
 frontend/node_modules/
 frontend/dist/
+frontend/.svelte-kit/
 frontend/.vite/
 frontend/.cache/
 frontend/*.log
