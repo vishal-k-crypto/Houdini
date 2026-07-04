@@ -169,19 +169,99 @@ class BrowserSession:
         except Exception as exc:
             return BrowserActionResult(success=False, message=f"Get text failed: {exc}")
 
+    def get_clean_text(self, max_chars: int = 4000) -> BrowserActionResult:
+        """Return a cleaned, compact text representation of the page."""
+        try:
+            text = self.page.inner_text("body")
+            # Collapse whitespace and truncate
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            cleaned = "\n".join(lines)
+            if len(cleaned) > max_chars:
+                cleaned = cleaned[:max_chars] + "\n...[truncated]"
+            return BrowserActionResult(success=True, data={"text": cleaned})
+        except Exception as exc:
+            return BrowserActionResult(success=False, message=f"Get clean text failed: {exc}")
+
+    def get_accessibility_snapshot(self) -> BrowserActionResult:
+        """Return an accessibility tree snapshot for structured page understanding."""
+        try:
+            snapshot = self.page.accessibility.snapshot()
+            return BrowserActionResult(success=True, data={"snapshot": snapshot})
+        except Exception as exc:
+            return BrowserActionResult(success=False, message=f"Accessibility snapshot failed: {exc}")
+
     def get_url(self) -> str:
         return self.page.url
 
     def get_title(self) -> str:
         return self.page.title()
 
-    def screenshot(self) -> BrowserActionResult:
+    def screenshot(self, full_page: bool = False) -> BrowserActionResult:
         try:
-            png_bytes = self.page.screenshot(type="png")
+            png_bytes = self.page.screenshot(type="png", full_page=full_page)
             b64 = base64.b64encode(png_bytes).decode("utf-8")
             return BrowserActionResult(success=True, data={"base64": b64}, screenshot=b64)
         except Exception as exc:
             return BrowserActionResult(success=False, message=f"Screenshot failed: {exc}")
+
+    def hover(self, selector: str) -> BrowserActionResult:
+        try:
+            self.page.hover(selector)
+            return BrowserActionResult(success=True, message=f"Hovered {selector}")
+        except Exception as exc:
+            return BrowserActionResult(success=False, message=f"Hover failed: {exc}")
+
+    def select_option(self, selector: str, value: Optional[str] = None, label: Optional[str] = None) -> BrowserActionResult:
+        try:
+            if label:
+                self.page.select_option(selector, label=label)
+            else:
+                self.page.select_option(selector, value=value)
+            return BrowserActionResult(success=True, message=f"Selected option on {selector}")
+        except Exception as exc:
+            return BrowserActionResult(success=False, message=f"Select failed: {exc}")
+
+    def upload_file(self, selector: str, file_path: str) -> BrowserActionResult:
+        try:
+            self.page.set_input_files(selector, file_path)
+            return BrowserActionResult(success=True, message=f"Uploaded {file_path} to {selector}")
+        except Exception as exc:
+            return BrowserActionResult(success=False, message=f"Upload failed: {exc}")
+
+    def drag(self, from_selector: str, to_selector: str) -> BrowserActionResult:
+        try:
+            self.page.drag_and_drop(from_selector, to_selector)
+            return BrowserActionResult(success=True, message=f"Dragged {from_selector} to {to_selector}")
+        except Exception as exc:
+            return BrowserActionResult(success=False, message=f"Drag failed: {exc}")
+
+    def switch_frame(self, name_or_index: Any) -> BrowserActionResult:
+        try:
+            if isinstance(name_or_index, int):
+                frames = self.page.frames
+                if name_or_index < len(frames):
+                    self._page = frames[name_or_index].page if hasattr(frames[name_or_index], "page") else frames[name_or_index]
+                else:
+                    raise IndexError(f"Frame index {name_or_index} out of range")
+            else:
+                self.page.frame(name=name_or_index)
+            return BrowserActionResult(success=True, message=f"Switched to frame {name_or_index}")
+        except Exception as exc:
+            return BrowserActionResult(success=False, message=f"Frame switch failed: {exc}")
+
+    def retry_click(self, selector: str, fallback_selectors: Optional[List[str]] = None, retries: int = 2) -> BrowserActionResult:
+        """Click with retries and optional fallback selectors."""
+        selectors = [selector] + (fallback_selectors or [])
+        last_error = ""
+        for attempt in range(retries):
+            for sel in selectors:
+                try:
+                    self.page.click(sel, timeout=5000)
+                    return BrowserActionResult(success=True, message=f"Clicked {sel}")
+                except Exception as exc:
+                    last_error = str(exc)
+            time.sleep(0.5)
+        return BrowserActionResult(success=False, message=f"Click failed after retries: {last_error}")
 
     # ── High-level helpers ─────────────────────────────────────────────
 
@@ -195,7 +275,7 @@ class BrowserSession:
         self.wait_for(seconds=2)
         return BrowserActionResult(success=True, message=f"Searched '{query}' on {url}")
 
-    def execute_plan(self, plan: List[Dict[str, Any]]) -> List[BrowserActionResult]:
+    def execute_plan(self, plan: List[Dict[str, Any]], use_retries: bool = True) -> List[BrowserActionResult]:
         """Execute a list of browser actions."""
         results = []
         for step in plan:
@@ -203,7 +283,10 @@ class BrowserSession:
             if action == "goto":
                 res = self.goto(step["url"])
             elif action == "click":
-                res = self.click(step["selector"])
+                if use_retries:
+                    res = self.retry_click(step["selector"], step.get("fallback_selectors"))
+                else:
+                    res = self.click(step["selector"])
             elif action == "type":
                 res = self.type_text(step["selector"], step["text"], step.get("submit", False))
             elif action == "press":
@@ -213,9 +296,21 @@ class BrowserSession:
             elif action == "wait":
                 res = self.wait_for(selector=step.get("selector"), seconds=step.get("seconds"))
             elif action == "screenshot":
-                res = self.screenshot()
+                res = self.screenshot(full_page=step.get("full_page", False))
             elif action == "get_text":
                 res = self.get_text(step.get("selector"))
+            elif action == "get_clean_text":
+                res = self.get_clean_text(max_chars=step.get("max_chars", 4000))
+            elif action == "hover":
+                res = self.hover(step["selector"])
+            elif action == "select":
+                res = self.select_option(step["selector"], value=step.get("value"), label=step.get("label"))
+            elif action == "upload":
+                res = self.upload_file(step["selector"], step["file_path"])
+            elif action == "drag":
+                res = self.drag(step["from"], step["to"])
+            elif action == "switch_frame":
+                res = self.switch_frame(step["frame"])
             else:
                 res = BrowserActionResult(success=False, message=f"Unknown action: {action}")
             results.append(res)
@@ -248,22 +343,55 @@ class BrowserTaskRunner:
         task_l = task.lower()
         return any(kw in task_l for kw in keywords)
 
-    def _plan(self, task: str, url: Optional[str] = None, page_text: Optional[str] = None) -> List[Dict[str, Any]]:
+    def _plan(
+        self,
+        task: str,
+        url: Optional[str] = None,
+        page_text: Optional[str] = None,
+        accessibility_snapshot: Optional[Dict] = None,
+        action_history: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         client = self._get_client()
-        context = f"Current URL: {url or 'unknown'}\nPage text:\n{page_text or 'N/A'}"[:2000]
-        prompt = f"""You are controlling a headless Chromium browser via Playwright.
+        snapshot_text = ""
+        if accessibility_snapshot:
+            snapshot_text = self._format_accessibility_snapshot(accessibility_snapshot, max_nodes=50)
+        context = (
+            f"Current URL: {url or 'unknown'}\n"
+            f"Page text:\n{page_text or 'N/A'}\n"
+            f"Accessibility tree:\n{snapshot_text or 'N/A'}"
+        )
+        if action_history:
+            context += f"\n\nActions already taken:\n" + "\n".join(f"- {a}" for a in action_history[-10:])
+        context = context[:4000]
+
+        prompt = f"""You are controlling a headless Chromium browser via Playwright to complete a real-world web task.
+
 Task: {task}
 
 {context}
 
-Return a JSON array of actions. Available actions:
+Return a JSON array of actions. Prefer stable selectors: exact text matches like `text=Submit`, semantic roles like `[placeholder='Search']`, or IDs. Avoid brittle XPath.
+
+Available actions:
 - {{"action": "goto", "url": "..."}}
-- {{"action": "click", "selector": "..."}}  (Playwright selector)
+- {{"action": "click", "selector": "...", "fallback_selectors": ["..."]}}
 - {{"action": "type", "selector": "...", "text": "...", "submit": true/false}}
 - {{"action": "press", "key": "..."}}
 - {{"action": "scroll", "direction": "down|up", "amount": 500}}
 - {{"action": "wait", "selector": "..."}} or {{"action": "wait", "seconds": 2}}
-- {{"action": "get_text", "selector": "..."}} (optional)
+- {{"action": "hover", "selector": "..."}}
+- {{"action": "select", "selector": "...", "value": "..."}} or {{"label": "..."}}
+- {{"action": "get_text", "selector": "..."}}
+- {{"action": "get_clean_text"}}
+- {{"action": "screenshot"}}
+
+Guidelines:
+1. Start by navigating to the right page if no URL is loaded.
+2. Click before typing into a field unless it is already focused.
+3. Wait after navigation, form submission, or AJAX-heavy interactions.
+4. If a search box exists, use `type` with `submit: true` rather than pressing Enter separately.
+5. If the task asks for information, end with `get_text` or `get_clean_text`.
+6. Do not assume success; verify the result when possible.
 
 Respond with JSON only."""
         result = client.generate(prompt, temperature=0.2)
@@ -273,6 +401,22 @@ Respond with JSON only."""
         except Exception as exc:
             logger.warning(f"Browser plan JSON extraction failed: {exc}")
             return []
+
+    @staticmethod
+    def _format_accessibility_snapshot(snapshot: Dict, max_nodes: int = 50) -> str:
+        """Convert an accessibility snapshot into a compact text summary."""
+        lines = []
+        def _walk(node, depth=0):
+            if len(lines) >= max_nodes:
+                return
+            role = node.get("role", "")
+            name = node.get("name", "")
+            if role and name:
+                lines.append(f"{'  '*depth}[{role}] {name}")
+            for child in node.get("children", []):
+                _walk(child, depth + 1)
+        _walk(snapshot)
+        return "\n".join(lines)
 
     def run(self, task: str) -> Dict[str, Any]:
         if not self._is_browser_task(task):
@@ -287,20 +431,24 @@ Respond with JSON only."""
             # Execute up to 3 replanning loops
             max_loops = 3
             all_results: List[BrowserActionResult] = []
+            action_history: List[str] = []
             for loop in range(max_loops):
                 results = session.execute_plan(plan)
                 all_results.extend(results)
+                action_history.extend(r.message for r in results if r.success)
                 if all(r.success for r in results):
                     break
-                # Replan from current state
+                # Replan from current state with richer context
                 url = session.get_url()
-                text_res = session.get_text()
+                text_res = session.get_clean_text(max_chars=3000)
                 page_text = text_res.data.get("text", "") if text_res.success else ""
-                plan = self._plan(task, url=url, page_text=page_text)
+                snapshot_res = session.get_accessibility_snapshot()
+                snapshot = snapshot_res.data.get("snapshot") if snapshot_res.success else None
+                plan = self._plan(task, url=url, page_text=page_text, accessibility_snapshot=snapshot, action_history=action_history)
                 if not plan:
                     break
 
-            final_text = session.get_text()
+            final_text = session.get_clean_text(max_chars=4000)
             final_url = session.get_url()
             success = all(r.success for r in all_results) and bool(all_results)
             return {

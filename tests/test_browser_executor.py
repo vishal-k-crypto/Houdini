@@ -193,7 +193,7 @@ class TestBrowserTaskRunner:
             instance.execute_plan.return_value = [
                 BrowserActionResult(success=True, message="Navigated")
             ]
-            instance.get_text.return_value = BrowserActionResult(
+            instance.get_clean_text.return_value = BrowserActionResult(
                 success=True, data={"text": "Example Domain"}
             )
             instance.get_url.return_value = "https://example.com"
@@ -222,3 +222,97 @@ class TestRunBrowserTaskConvenience:
             result = run_browser_task("Search Google for Houdini")
         assert result["success"] is True
         MockRunner.assert_called_once_with(client=None, headless=True)
+
+
+class TestBrowserSessionExtras:
+    """Tests for expanded browser action space and helpers."""
+
+    def test_get_clean_text(self, session, mock_page):
+        raw = "  Hello   \n\n  World  \n"
+        mock_page.inner_text.return_value = raw
+        result = session.get_clean_text(max_chars=100)
+        assert result.success is True
+        assert result.data["text"] == "Hello\nWorld"
+
+    def test_get_clean_text_truncates(self, session, mock_page):
+        mock_page.inner_text.return_value = "x" * 5000
+        result = session.get_clean_text(max_chars=100)
+        assert result.success is True
+        assert result.data["text"].endswith("[truncated]")
+
+    def test_get_accessibility_snapshot(self, session, mock_page):
+        mock_page.accessibility.snapshot.return_value = {"role": "WebArea", "name": "Example"}
+        result = session.get_accessibility_snapshot()
+        assert result.success is True
+        assert result.data["snapshot"]["role"] == "WebArea"
+
+    def test_hover(self, session, mock_page):
+        result = session.hover("#menu")
+        assert result.success is True
+        mock_page.hover.assert_called_once_with("#menu")
+
+    def test_select_option_by_value(self, session, mock_page):
+        result = session.select_option("#country", value="us")
+        assert result.success is True
+        mock_page.select_option.assert_called_once_with("#country", value="us")
+
+    def test_select_option_by_label(self, session, mock_page):
+        result = session.select_option("#country", label="United States")
+        assert result.success is True
+        mock_page.select_option.assert_called_once_with("#country", label="United States")
+
+    def test_upload_file(self, session, mock_page):
+        result = session.upload_file("#file", "/tmp/data.csv")
+        assert result.success is True
+        mock_page.set_input_files.assert_called_once_with("#file", "/tmp/data.csv")
+
+    def test_drag(self, session, mock_page):
+        result = session.drag("#source", "#target")
+        assert result.success is True
+        mock_page.drag_and_drop.assert_called_once_with("#source", "#target")
+
+    def test_retry_click_success_first_try(self, session, mock_page):
+        result = session.retry_click("#btn", retries=2)
+        assert result.success is True
+        mock_page.click.assert_called_once_with("#btn", timeout=5000)
+
+    def test_retry_click_uses_fallback(self, session, mock_page):
+        mock_page.click.side_effect = [Exception("not found"), None]
+        result = session.retry_click("#btn", fallback_selectors=["text=OK"], retries=2)
+        assert result.success is True
+        assert mock_page.click.call_args_list[0] == call("#btn", timeout=5000)
+        assert mock_page.click.call_args_list[1] == call("text=OK", timeout=5000)
+
+    def test_execute_plan_new_actions(self, session, mock_page):
+        plan = [
+            {"action": "hover", "selector": "#menu"},
+            {"action": "select", "selector": "#country", "value": "us"},
+            {"action": "upload", "selector": "#file", "file_path": "/tmp/x"},
+            {"action": "drag", "from": "#a", "to": "#b"},
+        ]
+        results = session.execute_plan(plan)
+        assert len(results) == 4
+        assert all(r.success for r in results)
+
+    def test_execute_plan_clean_text(self, session, mock_page):
+        mock_page.inner_text.return_value = "Result"
+        results = session.execute_plan([{"action": "get_clean_text", "max_chars": 50}])
+        assert results[0].success is True
+        assert results[0].data["text"] == "Result"
+
+
+class TestBrowserTaskRunnerPlanning:
+    """Tests for richer planning context."""
+
+    def test_format_accessibility_snapshot(self):
+        snapshot = {
+            "role": "WebArea",
+            "name": "Page",
+            "children": [
+                {"role": "link", "name": "Home", "children": []},
+                {"role": "button", "name": "Submit", "children": []},
+            ],
+        }
+        text = BrowserTaskRunner._format_accessibility_snapshot(snapshot)
+        assert "[link] Home" in text
+        assert "[button] Submit" in text
