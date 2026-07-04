@@ -71,7 +71,19 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Choose a Provider
+### 2. Discover & Configure Providers
+
+Run the setup helper to see what's available on your machine:
+
+```bash
+python -m src.main --setup
+```
+
+For copy-paste shell exports:
+
+```bash
+python -m src.main --setup --setup-export
+```
 
 **Option A — Local Ollama (default, private):**
 ```bash
@@ -85,7 +97,13 @@ export OPENAI_API_KEY=sk-...
 # or ANTHROPIC_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY, OPENROUTER_API_KEY, etc.
 ```
 
-**Option C — Browser-based WebLLM:**
+**Option C — CLI coding agent:**
+If you already have `claude`, `codex`, `kimi`, or another supported CLI agent installed, Houdini can use it directly:
+```bash
+export HOUDINI_DEFAULT_PROVIDER=cli:claude
+```
+
+**Option D — Browser-based WebLLM:**
 Start the frontend and select a WebLLM model — no installation, no API key.
 
 ### 3. Configure Environment
@@ -358,6 +376,42 @@ When opening an app, use Cmd+Space → type the app name → Enter.
 
 ---
 
+## 🌐 Headless Browser Automation
+
+Houdini includes a **headless browser executor** for web-only tasks. It uses Playwright to navigate, click, type, fill forms, and extract information without needing native desktop automation permissions.
+
+### What it does
+
+- Detects web-first tasks from natural language (`search Google`, `fill the form`, `go to https://...`).
+- Plans actions with accessibility-tree + page-text context.
+- Executes actions in a managed Chromium session.
+- Verifies completion with an LLM and reflects/repairs if something is missing.
+- Uses browser-specific skills for search, forms, login, and navigation.
+
+### Usage
+
+```bash
+# CLI — web tasks are automatically routed to the browser executor
+python -m src.main --task "Search Google for Houdini agent benchmark"
+python -m src.main --task "Open https://example.com and return the heading"
+
+# API / frontend — same task descriptions work everywhere
+python -m src.api.server
+# open http://localhost:8420 and submit a web task
+```
+
+### Browser benchmarks
+
+```bash
+# Run browser-only benchmark tasks
+python -m src.benchmark --tag browser
+
+# Run a specific browser task
+python -m src.benchmark --task-id browser-form-fill
+```
+
+---
+
 ## 🧭 Smart Router
 
 Houdini's **SmartRouter** dynamically selects the best provider/model for each task instead of using a single fixed model.
@@ -445,7 +499,7 @@ Houdini/
 │   ├── api/                    # FastAPI server + dashboard + auth
 │   ├── providers/              # Unified LLM adapter layer
 │   ├── planner/                # Task → macro step decomposition
-│   ├── agents/                 # Action executors (blind, vision, enhanced)
+│   ├── agents/                 # Action executors (blind, vision, browser, enhanced)
 │   ├── supervisor/             # Validation, semantic checking
 │   ├── loop/                   # Execution coordinators
 │   ├── skills/                 # Skill-as-file loader and registry
