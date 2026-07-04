@@ -66,3 +66,22 @@ def test_browser_observation_invalid_base64():
         assert False, "Expected ValueError for invalid base64"
     except ValueError as exc:
         assert str(exc) == "Invalid base64 screenshot data"
+
+
+def test_som_renderer_labels_elements():
+    from src.agents.browser_som import SetOfMarksRenderer
+    from PIL import Image
+
+    # Create a small white image
+    img = Image.new("RGB", (200, 100), color="white")
+    elements = [
+        {"id": "btn-1", "bbox": {"x": 10, "y": 10, "width": 40, "height": 20}, "tag": "button", "text": "OK"},
+        {"id": "btn-2", "bbox": {"x": 100, "y": 40, "width": 50, "height": 25}, "tag": "button", "text": "Cancel"},
+    ]
+    renderer = SetOfMarksRenderer()
+    result = renderer.render(img, elements)
+
+    assert len(result.marks) == 2
+    assert result.marks[0]["som_id"] == 1
+    assert result.marks[1]["som_id"] == 2
+    assert result.id_to_element[1]["text"] == "OK"

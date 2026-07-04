@@ -190,6 +190,32 @@ class BrowserSession:
         except Exception as exc:
             return BrowserActionResult(success=False, message=f"Accessibility snapshot failed: {exc}")
 
+    def get_interactive_elements(self) -> BrowserActionResult:
+        """Return a list of interactive elements with bounding boxes."""
+        try:
+            elements = self.page.evaluate("""
+                () => {
+                    const tags = ['a', 'button', 'input', 'select', 'textarea'];
+                    const out = [];
+                    document.querySelectorAll(tags.join(',')).forEach((el, idx) => {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            out.push({
+                                id: el.id || `el-${idx}`,
+                                tag: el.tagName.toLowerCase(),
+                                text: (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').slice(0, 100),
+                                type: el.type || null,
+                                bbox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+                            });
+                        }
+                    });
+                    return out;
+                }
+            """)
+            return BrowserActionResult(success=True, data={"elements": elements})
+        except Exception as exc:
+            return BrowserActionResult(success=False, message=f"Element extraction failed: {exc}")
+
     def get_url(self) -> str:
         return self.page.url
 
@@ -311,6 +337,8 @@ class BrowserSession:
                 res = self.drag(step["from"], step["to"])
             elif action == "switch_frame":
                 res = self.switch_frame(step["frame"])
+            elif action == "get_interactive_elements":
+                res = self.get_interactive_elements()
             else:
                 res = BrowserActionResult(success=False, message=f"Unknown action: {action}")
             results.append(res)
