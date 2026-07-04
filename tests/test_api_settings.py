@@ -66,3 +66,23 @@ def test_get_settings_includes_defaults():
         assert data["default_provider"] == "ollama"
         assert "available_providers" in data
         assert "smart_router" in data
+
+
+def test_browser_vision_setting():
+    """Toggle use_browser_vision via /api/settings."""
+    from fastapi.testclient import TestClient
+    from src.api.server import app
+
+    client = TestClient(app)
+    with patch.dict(os.environ, {}, clear=False):
+        res = client.post("/api/settings", json={"use_browser_vision": True})
+        assert res.status_code == 200
+        assert os.environ.get("HOUDINI_USE_BROWSER_VISION") == "true"
+
+        res = client.get("/api/settings")
+        assert res.status_code == 200
+        assert res.json()["use_browser_vision"] is True
+
+        res = client.post("/api/settings", json={"use_browser_vision": False})
+        assert res.status_code == 200
+        assert os.environ.get("HOUDINI_USE_BROWSER_VISION") == "false"

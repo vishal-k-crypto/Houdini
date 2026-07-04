@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { settings, fetchProviders, saveSettings } from '$lib/store';
+  import { settings, fetchProviders, saveSettings, fetchSettings } from '$lib/store';
   import type { ProviderInfo } from '$lib/store';
 
   let providers: ProviderInfo[] = [];
@@ -11,6 +11,10 @@
   onMount(async () => {
     try {
       providers = await fetchProviders();
+      const serverSettings = await fetchSettings();
+      if (typeof serverSettings.use_browser_vision === 'boolean') {
+        settings.update(s => ({ ...s, use_browser_vision: serverSettings.use_browser_vision }));
+      }
     } catch (e: any) {
       error = e.message || String(e);
     } finally {

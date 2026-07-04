@@ -106,6 +106,7 @@ export interface SessionEvent {
 
 export interface ScreenshotEvent {
   task_id?: string;
+  image?: string;
   image_base64?: string;
   timestamp?: string;
 }
@@ -274,6 +275,7 @@ export async function startBenchmarkRun(opts: {
   model?: string;
   cloud_endpoint?: string;
   verify_with_llm?: boolean;
+  generate_skills_on_failure?: boolean;
 }): Promise<BenchmarkRunInfo> {
   const res = await fetch(`/api/benchmarks/run`, {
     method: 'POST',
