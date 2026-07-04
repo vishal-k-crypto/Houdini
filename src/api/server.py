@@ -67,6 +67,21 @@ def _wire_event_bus():
 _WIRE_BUS_PENDING = True
 
 
+# ── Helpers ──────────────────────────────────────────────────────────
+
+def _provider_env_key(provider_id: str) -> Optional[str]:
+    """Return the canonical API-key env var for a provider id."""
+    mapping = {
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "deepseek": "DEEPSEEK_API_KEY",
+        "grok": "GROK_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+    }
+    return mapping.get(provider_id.lower().split(":")[0])
+
+
 # ── Pydantic schemas ────────────────────────────────────────────────
 
 class TaskStatus(str, Enum):
@@ -94,8 +109,13 @@ class SettingsUpdate(BaseModel):
     model_config = {"extra": "ignore"}
 
     default_provider: Optional[str] = None
+    provider: Optional[str] = None
     provider_keys: Optional[Dict[str, str]] = None
     provider_models: Optional[Dict[str, str]] = None
+    provider_base_urls: Optional[Dict[str, str]] = None
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    api_base: Optional[str] = None
     smart_router_enabled: Optional[bool] = None
     smart_router_prefer_local: Optional[bool] = None
     smart_router_budget_cap_usd: Optional[float] = None
@@ -465,14 +485,29 @@ def get_settings(_user=Depends(require_viewer)):
 def update_settings(body: SettingsUpdate, _user=Depends(require_operator)):
     """Apply non-persistent settings (keys are set in memory for the current process)."""
     from config.settings import settings as _settings
-    if body.default_provider:
-        os.environ["HOUDINI_DEFAULT_PROVIDER"] = body.default_provider
+    # Normalize provider from either flat or structured format
+    default_provider = body.default_provider or body.provider
+    if default_provider:
+        os.environ["HOUDINI_DEFAULT_PROVIDER"] = default_provider
+    if body.model and default_provider:
+        os.environ[f"HOUDINI_{default_provider.upper().replace(':', '_')}_MODEL"] = body.model
+    if body.api_key and default_provider:
+        # Derive env key for known providers
+        env_key = _provider_env_key(default_provider)
+        if env_key:
+            os.environ[env_key] = body.api_key
+    if body.api_base and default_provider:
+        if default_provider in ("ollama", "openai"):
+            os.environ[f"HOUDINI_{default_provider.upper()}_BASE_URL"] = body.api_base
     if body.provider_keys:
         for key, value in body.provider_keys.items():
             os.environ[key.upper()] = value
     if body.provider_models:
         for key, value in body.provider_models.items():
-            os.environ[f"HOUDINI_{key.upper()}_MODEL"] = value
+            os.environ[f"HOUDINI_{key.upper().replace(':', '_')}_MODEL"] = value
+    if body.provider_base_urls:
+        for key, value in body.provider_base_urls.items():
+            os.environ[f"HOUDINI_{key.upper().replace(':', '_')}_BASE_URL"] = value
     # Note: dataclasses are frozen, so in-memory settings changes are stored in env vars
     # and reflected via getattr fallbacks above.
     if body.smart_router_enabled is not None:
