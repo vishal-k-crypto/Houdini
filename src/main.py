@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 import time
 import io
@@ -208,6 +209,54 @@ def run_replay_mode(args):
         run_replay(session_id)
 
 
+def run_setup_mode(args):
+    """Interactive-ish setup: detect providers and print configuration recommendations."""
+    from .providers.registry import registry, get_default_provider
+    from .providers.cli_adapter import list_available_cli_agents
+
+    print("=" * 60)
+    print("  Houdini Agent — Provider Setup")
+    print("=" * 60)
+
+    available = registry.detect_available()
+    cli_agents = list_available_cli_agents()
+
+    print("\nDetected providers:")
+    for pid, info in sorted(available.items()):
+        status = "✅ available" if info.get("available") else "⚠️  unavailable"
+        print(f"  {pid:20s} {status}")
+        if "models" in info and info["models"]:
+            print(f"    models: {', '.join(str(m) for m in info['models'][:5])}")
+        if "agents" in info:
+            for name, agent_info in info["agents"].items():
+                print(f"    cli:{name:12s} {agent_info.get('description', '')}")
+
+    if cli_agents:
+        print(f"\nDetected CLI coding agents: {', '.join(cli_agents)}")
+    else:
+        print("\nNo CLI coding agents detected on PATH.")
+
+    default = get_default_provider()
+    print(f"\nRecommended default provider: {default or 'none detected'}")
+
+    if getattr(args, "export", False):
+        if default:
+            print(f"\nRun these commands to configure Houdini:")
+            print(f"  export HOUDINI_DEFAULT_PROVIDER={default}")
+            for pid in ["openai", "anthropic", "gemini"]:
+                env_key = f"{pid.upper().replace(':', '_')}_API_KEY"
+                if pid in available and os.environ.get(env_key):
+                    print(f"  export {env_key}={os.environ.get(env_key)}")
+        else:
+            print("\nNo default provider available. Set one of:")
+            print("  export OPENAI_API_KEY=sk-...")
+            print("  export ANTHROPIC_API_KEY=sk-ant-...")
+            print("  export GEMINI_API_KEY=...")
+            print("  export HOUDINI_DEFAULT_PROVIDER=ollama")
+
+    print("\nYou can also run `python -m src.main --list-providers` anytime.")
+
+
 def run_debug_report_mode(args):
     """Generate AI-readable debug reports from execution sessions."""
     from .utils.debug_report_generator import get_debug_report_generator
@@ -317,6 +366,12 @@ def main():
     parser.add_argument("--list-providers", dest="list_providers", action="store_true", default=False,
                         help="List detected providers and CLI agents, then exit")
 
+    # Setup / onboarding
+    parser.add_argument("--setup", dest="setup_mode", action="store_true", default=False,
+                        help="Detect providers and print setup recommendations")
+    parser.add_argument("--setup-export", dest="export", action="store_true", default=False,
+                        help="With --setup, print exportable env var commands")
+
     args = parser.parse_args()
     
     # Handle provider discovery
@@ -326,6 +381,11 @@ def main():
             print(f"  {pid:20s} {info}")
         default = get_default_provider()
         print(f"\nDefault: {default or 'none'}")
+        sys.exit(0)
+
+    # Handle setup / onboarding
+    if getattr(args, 'setup_mode', False):
+        run_setup_mode(args)
         sys.exit(0)
 
     # Handle health check mode
