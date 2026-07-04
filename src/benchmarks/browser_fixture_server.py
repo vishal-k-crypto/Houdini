@@ -123,24 +123,35 @@ class BrowserFixtureServer:
         self._server = uvicorn.Server(config)
         self._thread = threading.Thread(target=self._server.run, daemon=True)
         self._thread.start()
+
         deadline = time.time() + 5
         while time.time() < deadline:
             if self._server.started:
                 break
+            if not self._thread.is_alive():
+                raise RuntimeError("Fixture server thread died during startup")
             time.sleep(0.05)
+        else:
+            raise RuntimeError("Fixture server failed to start within 5s")
+
+        sock = self._server.servers[0].sockets[0]
+        self._actual_port = sock.getsockname()[1]
 
     def stop(self):
         if self._server:
             self._server.should_exit = True
         if self._thread:
             self._thread.join(timeout=5)
+            if self._thread.is_alive() and self._server:
+                self._server.force_exit = True
+                self._thread.join(timeout=2)
+        self._server = None
+        self._thread = None
 
     def url_for(self, path: str) -> str:
-        if self._server and self._server.servers:
-            port = self._server.servers[0].sockets[0].getsockname()[1]
-        else:
-            port = self.port
-        return f"http://127.0.0.1:{port}{path}"
+        if not getattr(self, "_actual_port", None):
+            raise RuntimeError("Server not started or port not assigned")
+        return f"http://127.0.0.1:{self._actual_port}{path}"
 
 
 if __name__ == "__main__":

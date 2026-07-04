@@ -4,12 +4,15 @@ import base64
 from typing import Tuple
 from unittest.mock import MagicMock
 
+import pytest
+import requests
+
 from src.agents.browser_observation import BrowserObservation
 
 
 def _make_png_b64(width: int = 100, height: int = 100, color: Tuple[int, int, int] = (255, 255, 255)) -> str:
     from PIL import Image
-    import io, base64
+    import io
     img = Image.new("RGB", (width, height), color=color)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -241,16 +244,40 @@ def test_vision_plan_text_only_when_provider_lacks_vision():
     assert "images" not in mock_client.generate.call_args.kwargs
 
 
-def test_fixture_server_serves_login_page():
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("/login", "Login"),
+        ("/todo", "Todo List"),
+        ("/search", "Search"),
+    ],
+)
+def test_fixture_server_serves_pages(path, expected):
     from src.benchmarks.browser_fixture_server import BrowserFixtureServer
 
     server = BrowserFixtureServer(port=0)
     server.start()
     try:
-        url = server.url_for("/login")
-        import requests
+        url = server.url_for(path)
         r = requests.get(url, timeout=5)
         assert r.status_code == 200
-        assert "Login" in r.text
+        assert expected in r.text
     finally:
         server.stop()
+        assert server._thread is None or not server._thread.is_alive()
+
+
+def test_fixture_server_serves_tasks_json():
+    from src.benchmarks.browser_fixture_server import BrowserFixtureServer
+
+    server = BrowserFixtureServer(port=0)
+    server.start()
+    try:
+        url = server.url_for("/tasks.json")
+        r = requests.get(url, timeout=5)
+        assert r.status_code == 200
+        data = r.json()
+        assert isinstance(data, list)
+    finally:
+        server.stop()
+        assert server._thread is None or not server._thread.is_alive()
