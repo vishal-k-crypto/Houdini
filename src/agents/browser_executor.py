@@ -364,7 +364,17 @@ class BrowserTaskRunner:
             context += f"\n\nActions already taken:\n" + "\n".join(f"- {a}" for a in action_history[-10:])
         context = context[:4000]
 
+        # Inject relevant skills as system guidance
+        skills_text = ""
+        try:
+            from ..skills.registry import skill_registry
+            skills_text = skill_registry.prompt_for_task(task, top_k=2, min_score=1.0)
+        except Exception:
+            pass
+
         prompt = f"""You are controlling a headless Chromium browser via Playwright to complete a real-world web task.
+
+{skills_text}
 
 Task: {task}
 

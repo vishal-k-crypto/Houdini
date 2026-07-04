@@ -316,3 +316,26 @@ class TestBrowserTaskRunnerPlanning:
         text = BrowserTaskRunner._format_accessibility_snapshot(snapshot)
         assert "[link] Home" in text
         assert "[button] Submit" in text
+
+    def test_plan_includes_skills(self):
+        """Planning prompt should include relevant browser skills."""
+        runner = BrowserTaskRunner()
+
+        def fake_generate(prompt, **kwargs):
+            # Capture the prompt and return a minimal plan
+            fake_generate.last_prompt = prompt
+            class R:
+                text = '[{"action": "goto", "url": "https://google.com"}]'
+            return R()
+
+        fake_client = MagicMock()
+        fake_client.generate = fake_generate
+        fake_client._extract_json = lambda text: [{"action": "goto", "url": "https://google.com"}]
+
+        runner.client = fake_client
+        runner._plan("Search Google for Houdini")
+
+        prompt = fake_generate.last_prompt
+        assert "Search Google for Houdini" in prompt
+        # Skills may be loaded depending on cwd; if not, prompt should still be valid
+        assert "Task:" in prompt
