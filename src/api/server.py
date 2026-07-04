@@ -630,6 +630,7 @@ class BenchmarkRequest(BaseModel):
     model: Optional[str] = None
     cloud_endpoint: Optional[str] = None
     verify_with_llm: bool = False
+    generate_skills_on_failure: bool = False
 
 
 class BenchmarkTaskInfo(BaseModel):
@@ -692,6 +693,7 @@ def run_benchmark_v2(body: BenchmarkRequest, background_tasks: BackgroundTasks, 
         architecture=body.architecture,
         cloud_endpoint=body.cloud_endpoint,
         verify_with_llm=body.verify_with_llm,
+        generate_skills_on_failure=body.generate_skills_on_failure,
     )
 
     import uuid
@@ -773,6 +775,29 @@ def get_router_usage(_user=Depends(require_viewer)):
     """Return aggregate usage/cost summary from the smart router."""
     from ..providers.smart_router import smart_router
     return smart_router.usage_summary()
+
+
+# ── Skill generation endpoint ────────────────────────────────────────
+
+class SkillGenerationRequest(BaseModel):
+    task: str = Field(..., min_length=1)
+    error: Optional[str] = None
+
+
+@app.post("/api/skills/generate-from-failure", tags=["skills"])
+def generate_skill_from_failure_endpoint(body: SkillGenerationRequest, _user=Depends(require_operator)):
+    """Generate and save a skill from a failed task description and error."""
+    from ..skills.generator import generate_skill_from_failure
+    try:
+        result = generate_skill_from_failure(task=body.task, error=body.error)
+        return {
+            "skill_id": result["skill_id"],
+            "path": str(result["path"]),
+            "skill_text": result["skill_text"],
+        }
+    except Exception as exc:
+        logger.error(f"Skill generation failed: {exc}")
+        raise HTTPException(500, f"Skill generation failed: {exc}")
 
 
 # ── Task queue / scheduler endpoints ─────────────────────────────────

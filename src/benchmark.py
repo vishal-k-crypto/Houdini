@@ -185,6 +185,7 @@ class BenchmarkRunner:
         architecture: str = "adaptive",
         cloud_endpoint: Optional[str] = None,
         verify_with_llm: bool = False,
+        generate_skills_on_failure: bool = False,
     ):
         self.tasks = tasks
         self.provider = provider
@@ -192,6 +193,7 @@ class BenchmarkRunner:
         self.architecture = architecture
         self.cloud_endpoint = cloud_endpoint
         self.verify_with_llm = verify_with_llm
+        self.generate_skills_on_failure = generate_skills_on_failure
 
     def run(self, dry_run: bool = False) -> BenchmarkReport:
         import uuid
@@ -244,6 +246,11 @@ class BenchmarkRunner:
                 report.passed += 1
             else:
                 report.failed += 1
+                if self.generate_skills_on_failure:
+                    try:
+                        self._generate_skill_from_failure(task, result)
+                    except Exception as exc:
+                        logger.warning(f"Could not generate skill for {task.id}: {exc}")
 
             logger.info(
                 f"  → {'PASS' if result.success else 'FAIL'} "
@@ -266,6 +273,19 @@ class BenchmarkRunner:
         report.completed_at = datetime.now().isoformat()
         report.tag_breakdown = self._compute_tag_breakdown(report.results)
         return report
+
+    def _generate_skill_from_failure(self, task: BenchmarkTask, result: TaskResult) -> None:
+        """Generate a skill from a failed benchmark result to improve future runs."""
+        from src.skills.generator import generate_skill_from_failure
+
+        error = result.error or "Task failed"
+        generated = generate_skill_from_failure(
+            task=task.description,
+            error=error,
+        )
+        logger.info(
+            f"  📝 Generated skill '{generated['skill_id']}' saved to {generated.get('path')}"
+        )
 
     # ── Single task execution ────────────────────────────────────
 
@@ -444,6 +464,8 @@ def main():
     parser.add_argument("--cloud-endpoint", type=str, default=None)
     parser.add_argument("--verify-with-llm", action="store_true",
                         help="Use an LLM judge with screenshots to verify task outcomes")
+    parser.add_argument("--generate-skills-on-failure", action="store_true",
+                        help="Generate a skill from each failed task to improve future runs")
     parser.add_argument("--output", type=str, default=None,
                         help="Write JSON report to this file")
     parser.add_argument("--tasks-file", type=str, default=None,
@@ -475,6 +497,7 @@ def main():
         architecture=args.architecture,
         cloud_endpoint=args.cloud_endpoint,
         verify_with_llm=args.verify_with_llm,
+        generate_skills_on_failure=args.generate_skills_on_failure,
     )
 
     report = runner.run(dry_run=args.dry_run)

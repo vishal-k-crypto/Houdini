@@ -6,6 +6,7 @@
     startBenchmarkRun,
     fetchBenchmarkResult,
     fetchProviders,
+    generateSkillFromFailure,
     type BenchmarkTask,
     type BenchmarkReport,
     type ProviderInfo
@@ -22,11 +23,13 @@
   let provider = $settings.provider || '';
   let model = $settings.model || '';
   let verifyWithLlm = false;
+  let generateSkillsOnFailure = false;
   let running = false;
   let runError = '';
   let currentRunId: string | null = null;
   let currentReport: BenchmarkReport | null = null;
   let pollInterval: number;
+  let skillGenStatus: Record<string, { status: 'idle' | 'generating' | 'done' | 'error'; message: string }> = {};
 
   async function load() {
     loading = true;
@@ -54,7 +57,8 @@
         architecture,
         provider: provider || undefined,
         model: model || undefined,
-        verify_with_llm: verifyWithLlm
+        verify_with_llm: verifyWithLlm,
+        generate_skills_on_failure: generateSkillsOnFailure
       });
       currentRunId = info.run_id;
       pollInterval = window.setInterval(pollRun, 2000);
@@ -78,6 +82,18 @@
       running = false;
       window.clearInterval(pollInterval);
     }
+  }
+
+  async function generateSkill(result: { task_id: string; description: string; error?: string }) {
+    skillGenStatus[result.task_id] = { status: 'generating', message: 'Generating…' };
+    skillGenStatus = skillGenStatus;
+    try {
+      const data = await generateSkillFromFailure(result.description, result.error);
+      skillGenStatus[result.task_id] = { status: 'done', message: `Saved ${data.skill_id}` };
+    } catch (e: any) {
+      skillGenStatus[result.task_id] = { status: 'error', message: e.message || String(e) };
+    }
+    skillGenStatus = skillGenStatus;
   }
 
   onMount(() => {
@@ -141,6 +157,12 @@
           <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
             <input type="checkbox" bind:checked={verifyWithLlm} class="rounded border-border" />
             Verify outcomes with LLM judge
+          </label>
+        </div>
+        <div class="flex items-end">
+          <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+            <input type="checkbox" bind:checked={generateSkillsOnFailure} class="rounded border-border" />
+            Auto-generate skills from failures
           </label>
         </div>
       </div>
@@ -245,6 +267,22 @@
             {/if}
             {#if result.judge_reason}
               <p class="text-[10px] text-gray-400 mt-1">Judge: {result.judge_reason}</p>
+            {/if}
+            {#if !result.success}
+              <div class="mt-2">
+                <button
+                  on:click={() => generateSkill(result)}
+                  disabled={skillGenStatus[result.task_id]?.status === 'generating'}
+                  class="text-[10px] px-2 py-1 rounded bg-[#161b22] border border-border hover:border-blue-500 disabled:opacity-50 text-gray-300"
+                >
+                  {skillGenStatus[result.task_id]?.status === 'generating' ? 'Generating skill…' : 'Generate skill from failure'}
+                </button>
+                {#if skillGenStatus[result.task_id]}
+                  <span class="text-[10px] ml-2 {skillGenStatus[result.task_id].status === 'done' ? 'text-green-400' : skillGenStatus[result.task_id].status === 'error' ? 'text-red-400' : 'text-gray-400'}">
+                    {skillGenStatus[result.task_id].message}
+                  </span>
+                {/if}
+              </div>
             {/if}
           </div>
         {/each}
