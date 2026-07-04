@@ -143,6 +143,8 @@ class TaskResult:
     vision_strategy: Optional[str] = None
     confidence_scores: List[float] = field(default_factory=list)
     avg_confidence: float = 0.0
+    judge_score: Optional[float] = None
+    judge_reason: Optional[str] = None
 
 
 @dataclass
@@ -165,12 +167,21 @@ class BenchmarkReport:
 # ── Benchmark runner ─────────────────────────────────────────────────
 
 class BenchmarkRunner:
-    def __init__(self, tasks: List[BenchmarkTask], model: Optional[str] = None,
-                 architecture: str = "adaptive", cloud_endpoint: Optional[str] = None):
+    def __init__(
+        self,
+        tasks: List[BenchmarkTask],
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        architecture: str = "adaptive",
+        cloud_endpoint: Optional[str] = None,
+        verify_with_llm: bool = False,
+    ):
         self.tasks = tasks
+        self.provider = provider
         self.model = model
         self.architecture = architecture
         self.cloud_endpoint = cloud_endpoint
+        self.verify_with_llm = verify_with_llm
 
     def run(self, dry_run: bool = False) -> BenchmarkReport:
         import uuid
@@ -249,13 +260,17 @@ class BenchmarkRunner:
     # ── Single task execution ────────────────────────────────────
 
     def _run_single(self, task: BenchmarkTask) -> TaskResult:
-        from src.utils.ollama_client import OllamaClient
-        from config.settings import settings
+        from src.providers.registry import registry, get_default_provider
 
-        model = self.model or settings.ollama_default_model
         start = time.time()
         try:
-            client = OllamaClient(model_name=model, cloud_endpoint=self.cloud_endpoint)
+            provider_id = self.provider or os.environ.get("HOUDINI_DEFAULT_PROVIDER") or get_default_provider() or "ollama"
+            # If provider looks like a model alias rather than a provider id,
+            # fall back to auto-detected default provider.
+            if "/" not in provider_id and provider_id not in registry.list_providers():
+                provider_id = get_default_provider() or "ollama"
+
+            client = registry.create(provider_id, model_name=self.model)
 
             if self.architecture == "langgraph":
                 from src.loop.langgraph_coordinator import LangGraphCoordinator
@@ -278,14 +293,33 @@ class BenchmarkRunner:
 
             result = coordinator.execute(task.description)
             duration = time.time() - start
+
+            success = bool(result.get("success", False))
+            error = result.get("error")
+
+            # Optional LLM judge: verify the task outcome by asking a separate model.
+            judge_score = None
+            judge_reason = None
+            if self.verify_with_llm and success and task.verify_hint:
+                try:
+                    judge_score, judge_reason = self._llm_judge(task, client)
+                    # Override success if the judge strongly disagrees.
+                    if judge_score is not None and judge_score < 0.5:
+                        success = False
+                        error = (error or "") + f" [LLM judge rejected: {judge_reason}]"
+                except Exception as exc:
+                    logger.warning(f"LLM judge failed for {task.id}: {exc}")
+
             return TaskResult(
                 task_id=task.id,
                 description=task.description,
                 tags=task.tags,
-                success=result.get("success", False),
-                error=result.get("error"),
+                success=success,
+                error=error,
                 duration_s=round(duration, 2),
                 vision_strategy=result.get("vision_strategy"),
+                judge_score=judge_score,
+                judge_reason=judge_reason,
             )
         except Exception as exc:
             return TaskResult(
@@ -296,6 +330,44 @@ class BenchmarkRunner:
                 error=str(exc),
                 duration_s=round(time.time() - start, 2),
             )
+
+    def _llm_judge(self, task: BenchmarkTask, client) -> tuple:
+        """Ask the configured provider whether the task outcome matches the intent.
+
+        Returns a score in [0, 1] and a short reason. Uses a screenshot when the
+        provider adapter supports image input.
+        """
+        from src.vision.screen_capture import capture_screen
+
+        prompt = (
+            f"You are evaluating whether a desktop automation task succeeded.\n\n"
+            f"Task: {task.description}\n"
+            f"Expected outcome hint: {task.verify_hint or 'No explicit hint'}\n\n"
+            f"Look at the current screenshot and reply with STRICT JSON only:\n"
+            f'{{"score": <float 0.0-1.0>, "reason": "<one sentence>"}}'
+        )
+
+        image = None
+        try:
+            image = capture_screen()
+        except Exception as exc:
+            logger.warning(f"Could not capture screenshot for judge: {exc}")
+
+        if image is not None and hasattr(client, "generate"):
+            raw = client.generate(prompt, images=[image])
+        else:
+            raw = client.generate(prompt)
+
+        text = raw.strip()
+        # Strip markdown fences if present
+        if text.startswith("```"):
+            text = "\n".join(text.split("\n")[1:])
+        if text.endswith("```"):
+            text = text[:-3].strip()
+        parsed = json.loads(text)
+        score = float(parsed.get("score", 0.0))
+        reason = str(parsed.get("reason", ""))
+        return score, reason
 
     # ── Tag breakdown ────────────────────────────────────────────
 
@@ -354,10 +426,14 @@ def main():
     parser.add_argument("--tag", type=str, default=None, help="Only run tasks with this tag")
     parser.add_argument("--task-id", type=str, default=None, help="Run a single task by ID")
     parser.add_argument("--dry-run", action="store_true", help="List tasks without executing")
-    parser.add_argument("--model", type=str, default=None, help="Ollama model override")
+    parser.add_argument("--provider", type=str, default=None,
+                        help="Provider id (openai, anthropic, gemini, ollama, ...)")
+    parser.add_argument("--model", type=str, default=None, help="Model name/alias")
     parser.add_argument("--architecture", type=str, default="adaptive",
                         choices=["adaptive", "langgraph", "legacy"])
     parser.add_argument("--cloud-endpoint", type=str, default=None)
+    parser.add_argument("--verify-with-llm", action="store_true",
+                        help="Use an LLM judge with screenshots to verify task outcomes")
     parser.add_argument("--output", type=str, default=None,
                         help="Write JSON report to this file")
     parser.add_argument("--tasks-file", type=str, default=None,
@@ -384,9 +460,11 @@ def main():
 
     runner = BenchmarkRunner(
         tasks=tasks,
+        provider=args.provider,
         model=args.model,
         architecture=args.architecture,
         cloud_endpoint=args.cloud_endpoint,
+        verify_with_llm=args.verify_with_llm,
     )
 
     report = runner.run(dry_run=args.dry_run)

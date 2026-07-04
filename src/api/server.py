@@ -571,17 +571,55 @@ class BenchmarkRequest(BaseModel):
     tag: Optional[str] = None
     task_id: Optional[str] = None
     architecture: str = "adaptive"
+    provider: Optional[str] = None
     model: Optional[str] = None
     cloud_endpoint: Optional[str] = None
+    verify_with_llm: bool = False
 
 
-@app.post("/api/benchmark", tags=["benchmark"])
-def run_benchmark(body: BenchmarkRequest, background_tasks: BackgroundTasks, _user=Depends(require_operator)):
+class BenchmarkTaskInfo(BaseModel):
+    id: str
+    description: str
+    tags: List[str]
+    expected_app: Optional[str] = None
+    timeout_s: float = 120.0
+    verify_hint: Optional[str] = None
+
+
+@app.get("/api/benchmarks/tasks", tags=["benchmark"])
+def list_benchmark_tasks(task: Optional[str] = None, tag: Optional[str] = None):
+    """List all available benchmark tasks, optionally filtered by query or tag."""
+    from ..benchmark import BENCHMARK_TASKS
+
+    tasks = list(BENCHMARK_TASKS)
+    if tag:
+        tasks = [t for t in tasks if tag in t.tags]
+    if task:
+        task_l = task.lower()
+        tasks = [t for t in tasks if task_l in t.description.lower() or task_l in t.id.lower()]
+    return {
+        "tasks": [
+            BenchmarkTaskInfo(
+                id=t.id,
+                description=t.description,
+                tags=t.tags,
+                expected_app=t.expected_app,
+                timeout_s=t.timeout_s,
+                verify_hint=t.verify_hint,
+            )
+            for t in tasks
+        ],
+        "total": len(tasks),
+    }
+
+
+@app.post("/api/benchmarks/run", tags=["benchmark"])
+def run_benchmark_v2(body: BenchmarkRequest, background_tasks: BackgroundTasks, _user=Depends(require_operator)):
     """
     Kick off a benchmark run in the background.
-    Returns immediately with a run_id; poll GET /api/benchmark/{run_id} for results.
+    Returns immediately with a run_id; poll GET /api/benchmarks/results/{run_id}.
     """
-    from ..benchmark import BENCHMARK_TASKS, BenchmarkTask, BenchmarkRunner
+    from ..benchmark import BENCHMARK_TASKS, BenchmarkRunner
     from dataclasses import asdict
 
     tasks = list(BENCHMARK_TASKS)
@@ -594,9 +632,11 @@ def run_benchmark(body: BenchmarkRequest, background_tasks: BackgroundTasks, _us
 
     runner = BenchmarkRunner(
         tasks=tasks,
+        provider=body.provider,
         model=body.model,
         architecture=body.architecture,
         cloud_endpoint=body.cloud_endpoint,
+        verify_with_llm=body.verify_with_llm,
     )
 
     import uuid
@@ -604,24 +644,37 @@ def run_benchmark(body: BenchmarkRequest, background_tasks: BackgroundTasks, _us
 
     def _bg():
         report = runner.run()
-        with _tasks_lock:
-            _benchmark_results[run_id] = asdict(report)
+        _benchmark_results[run_id] = asdict(report)
 
     background_tasks.add_task(_bg)
     return {"run_id": run_id, "tasks": len(tasks), "status": "started"}
 
 
+# Backwards-compatible alias
+@app.post("/api/benchmark", tags=["benchmark"])
+def run_benchmark_compat(body: BenchmarkRequest, background_tasks: BackgroundTasks, _user=Depends(require_operator)):
+    """Deprecated: use /api/benchmarks/run instead."""
+    return run_benchmark_v2(body, background_tasks, _user)
+
+
 _benchmark_results: Dict[str, Any] = {}
+_benchmark_results_lock = threading.Lock()
 
 
-@app.get("/api/benchmark/{run_id}", tags=["benchmark"])
-def get_benchmark_result(run_id: str):
+@app.get("/api/benchmarks/results/{run_id}", tags=["benchmark"])
+def get_benchmark_result_v2(run_id: str):
     """Poll for benchmark results."""
-    with _tasks_lock:
+    with _benchmark_results_lock:
         result = _benchmark_results.get(run_id)
     if result is None:
         return {"run_id": run_id, "status": "running"}
     return {"run_id": run_id, "status": "complete", "report": result}
+
+
+@app.get("/api/benchmark/{run_id}", tags=["benchmark"])
+def get_benchmark_result_compat(run_id: str):
+    """Deprecated: use /api/benchmarks/results/{run_id} instead."""
+    return get_benchmark_result_v2(run_id)
 
 
 # ── Task queue / scheduler endpoints ─────────────────────────────────

@@ -6,6 +6,7 @@
     { href: '/', label: 'Run' },
     { href: '/sessions', label: 'Sessions' },
     { href: '/skills', label: 'Skills' },
+    { href: '/benchmarks', label: 'Benchmarks' },
     { href: '/settings', label: 'Settings' },
   ];
 </script>
