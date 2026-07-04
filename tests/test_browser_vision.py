@@ -1,8 +1,18 @@
 """Tests for browser vision grounding helpers."""
 
 import base64
+from typing import Tuple
 
 from src.agents.browser_observation import BrowserObservation
+
+
+def _make_png_b64(width: int = 100, height: int = 100, color: Tuple[int, int, int] = (255, 255, 255)) -> str:
+    from PIL import Image
+    import io, base64
+    img = Image.new("RGB", (width, height), color=color)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 def test_browser_observation_builds():
@@ -142,6 +152,7 @@ from unittest.mock import MagicMock
 
 def test_vision_plan_uses_som_when_provider_supports_vision():
     from src.agents.browser_executor import BrowserTaskRunner
+    from src.agents.browser_observation import BrowserObservation
 
     mock_client = MagicMock()
     mock_client.supports_vision = True
@@ -149,15 +160,16 @@ def test_vision_plan_uses_som_when_provider_supports_vision():
     mock_client._extract_json.return_value = [{"action": "click", "som_id": 1}]
 
     runner = BrowserTaskRunner(client=mock_client, headless=True)
-    # Patch observation building to avoid real browser
-    runner._build_observation = lambda session: MagicMock(
+
+    obs = BrowserObservation(
         url="https://example.com",
         title="Example",
-        screenshot_b64="iVBORw0KGgo=",
+        screenshot_b64=_make_png_b64(),
         accessibility_tree={},
-        interactive_elements=[{"id": "btn", "tag": "button", "text": "OK", "bbox": {"x": 0, "y": 0, "width": 10, "height": 10}}],
+        interactive_elements=[{"id": "el-btn", "tag": "button", "text": "OK", "bbox": {"x": 0, "y": 0, "width": 10, "height": 10}}],
         clean_text="Example Domain",
     )
 
-    plan = runner._plan("Click the OK button")
-    assert plan == [{"action": "click", "som_id": 1}]
+    plan = runner._plan("Click the OK button", observation=obs)
+    assert plan == [{"action": "click", "som_id": 1, "selector": "text=OK"}]
+    assert mock_client.generate.call_args.kwargs.get("images")
