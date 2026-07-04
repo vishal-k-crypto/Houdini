@@ -120,6 +120,7 @@ class SettingsUpdate(BaseModel):
     smart_router_prefer_local: Optional[bool] = None
     smart_router_budget_cap_usd: Optional[float] = None
     smart_router_latency_budget_ms: Optional[float] = None
+    use_browser_vision: Optional[bool] = None
 
 
 class TaskInfo(BaseModel):
@@ -472,6 +473,7 @@ def get_settings(_user=Depends(require_viewer)):
         "ollama_default_model": getattr(settings, "ollama_default_model", None),
         "gemini_default_model": getattr(settings, "gemini_default_model", None),
         "webllm_enabled": os.environ.get("HOUDINI_WEBLLM_ENABLED", "false").lower() == "true",
+        "use_browser_vision": os.environ.get("HOUDINI_USE_BROWSER_VISION", "false").lower() == "true",
         "smart_router": {
             "enabled": getattr(settings, "smart_router_enabled", False),
             "prefer_local": getattr(settings, "smart_router_prefer_local", False),
@@ -518,6 +520,8 @@ def update_settings(body: SettingsUpdate, _user=Depends(require_operator)):
         os.environ["HOUDINI_BUDGET_CAP_USD"] = str(body.smart_router_budget_cap_usd)
     if body.smart_router_latency_budget_ms is not None:
         os.environ["HOUDINI_LATENCY_BUDGET_MS"] = str(body.smart_router_latency_budget_ms)
+    if body.use_browser_vision is not None:
+        os.environ["HOUDINI_USE_BROWSER_VISION"] = str(body.use_browser_vision).lower()
 
     # Re-sync the global smart router with the latest env vars
     try:

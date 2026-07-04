@@ -107,6 +107,10 @@
           <input type="checkbox" bind:checked={$settings.thinking_window} />
           Thinking window (native UI)
         </label>
+        <label class="flex items-center gap-2">
+          <input type="checkbox" bind:checked={$settings.use_browser_vision} />
+          Use browser vision (screenshot + Set-of-Marks)
+        </label>
       </div>
 
       <div class="border-t border-border pt-4 mt-2">
