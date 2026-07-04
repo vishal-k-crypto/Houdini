@@ -200,7 +200,8 @@ class TestBrowserTaskRunner:
 
             runner = BrowserTaskRunner()
             with patch.object(runner, "_plan", return_value=[{"action": "goto", "url": "https://example.com"}]):
-                result = runner.run("Open https://example.com")
+                with patch.object(runner, "_verify_completion", return_value={"complete": True, "reason": "Page loaded", "missing": ""}):
+                    result = runner.run("Open https://example.com")
 
         assert result["success"] is True
         assert result["browser"] is True
@@ -339,3 +340,39 @@ class TestBrowserTaskRunnerPlanning:
         assert "Search Google for Houdini" in prompt
         # Skills may be loaded depending on cwd; if not, prompt should still be valid
         assert "Task:" in prompt
+
+    def test_verify_completion_parses_json(self):
+        runner = BrowserTaskRunner()
+
+        def fake_generate(prompt, **kwargs):
+            class R:
+                text = '{"complete": true, "reason": "Done", "missing": ""}'
+            return R()
+
+        fake_client = MagicMock()
+        fake_client.generate = fake_generate
+        fake_client._extract_json = lambda text: {"complete": True, "reason": "Done", "missing": ""}
+
+        runner.client = fake_client
+        result = runner._verify_completion("Open example.com", "https://example.com", "Example Domain", ["Navigated"])
+
+        assert result["complete"] is True
+        assert result["reason"] == "Done"
+
+    def test_reflect_returns_plan(self):
+        runner = BrowserTaskRunner()
+
+        def fake_generate(prompt, **kwargs):
+            class R:
+                text = '[{"action": "click", "selector": "text=Submit"}]'
+            return R()
+
+        fake_client = MagicMock()
+        fake_client.generate = fake_generate
+        fake_client._extract_json = lambda text: [{"action": "click", "selector": "text=Submit"}]
+
+        runner.client = fake_client
+        plan = runner._reflect("Fill form", "https://example.com", "Form page", ["Navigated"], "Need to submit")
+
+        assert len(plan) == 1
+        assert plan[0]["action"] == "click"

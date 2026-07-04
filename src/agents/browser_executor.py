@@ -428,6 +428,88 @@ Respond with JSON only."""
         _walk(snapshot)
         return "\n".join(lines)
 
+    def _verify_completion(
+        self,
+        task: str,
+        url: str,
+        page_text: str,
+        action_history: List[str],
+    ) -> Dict[str, Any]:
+        """Ask the LLM whether the browser task is complete and why."""
+        client = self._get_client()
+        history_text = "\n".join(f"- {a}" for a in action_history[-15:]) or "None"
+        prompt = f"""You are verifying whether a web automation task has been completed successfully.
+
+Task: {task}
+Final URL: {url}
+Actions taken:
+{history_text}
+
+Page content:
+{page_text[:2000]}
+
+Respond with STRICT JSON only:
+{{
+  "complete": true/false,
+  "reason": "one sentence explaining why",
+  "missing": "what still needs to be done, if anything"
+}}"""
+        try:
+            result = client.generate(prompt, temperature=0.1)
+            text = result.text if hasattr(result, "text") else str(result)
+            parsed = client._extract_json(text)
+            return {
+                "complete": bool(parsed.get("complete", False)),
+                "reason": str(parsed.get("reason", "")),
+                "missing": str(parsed.get("missing", "")),
+            }
+        except Exception as exc:
+            logger.warning(f"Browser completion verification failed: {exc}")
+            return {"complete": False, "reason": f"Verification failed: {exc}", "missing": ""}
+
+    def _reflect(
+        self,
+        task: str,
+        url: str,
+        page_text: str,
+        action_history: List[str],
+        missing: str,
+    ) -> List[Dict[str, Any]]:
+        """Generate a repair plan when verification shows the task is incomplete."""
+        client = self._get_client()
+        snapshot_text = ""
+        skills_text = ""
+        try:
+            from ..skills.registry import skill_registry
+            skills_text = skill_registry.prompt_for_task(task, top_k=2, min_score=1.0)
+        except Exception:
+            pass
+        history_text = "\n".join(f"- {a}" for a in action_history[-15:]) or "None"
+        prompt = f"""You are controlling a headless Chromium browser. The previous attempt did not fully complete the task.
+
+{skills_text}
+
+Task: {task}
+Current URL: {url}
+Actions already taken:
+{history_text}
+
+What is still missing: {missing}
+
+Page content:
+{page_text[:2000]}
+
+Return a JSON array of additional actions to finish the task. Use the same action schema as before.
+
+Respond with JSON only."""
+        try:
+            result = client.generate(prompt, temperature=0.2)
+            text = result.text if hasattr(result, "text") else str(result)
+            return client._extract_json(text)
+        except Exception as exc:
+            logger.warning(f"Browser reflection plan generation failed: {exc}")
+            return []
+
     def run(self, task: str) -> Dict[str, Any]:
         if not self._is_browser_task(task):
             return {"success": False, "error": "Not a browser task", "browser": False}
@@ -460,13 +542,42 @@ Respond with JSON only."""
 
             final_text = session.get_clean_text(max_chars=4000)
             final_url = session.get_url()
+            page_text = final_text.data.get("text", "") if final_text.success else ""
             success = all(r.success for r in all_results) and bool(all_results)
+
+            # Verification + reflection: even if actions succeeded, ask the LLM
+            # whether the task goal is actually satisfied.
+            if success:
+                verification = self._verify_completion(task, final_url, page_text, action_history)
+                if not verification.get("complete"):
+                    # Try up to 2 reflection loops to finish missing steps
+                    for reflect_loop in range(2):
+                        repair_plan = self._reflect(
+                            task, final_url, page_text, action_history, verification.get("missing", "")
+                        )
+                        if not repair_plan:
+                            break
+                        repair_results = session.execute_plan(repair_plan)
+                        all_results.extend(repair_results)
+                        action_history.extend(r.message for r in repair_results if r.success)
+                        final_url = session.get_url()
+                        final_text = session.get_clean_text(max_chars=4000)
+                        page_text = final_text.data.get("text", "") if final_text.success else ""
+                        if all(r.success for r in repair_results):
+                            verification = self._verify_completion(task, final_url, page_text, action_history)
+                            if verification.get("complete"):
+                                break
+                        else:
+                            break
+                success = verification.get("complete", success)
+
             return {
                 "success": success,
                 "browser": True,
                 "url": final_url,
-                "page_text": final_text.data.get("text", "") if final_text.success else "",
+                "page_text": page_text,
                 "actions": [{"message": r.message, "success": r.success} for r in all_results],
+                "verified": success,
             }
 
 
