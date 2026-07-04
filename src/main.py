@@ -229,8 +229,8 @@ def run_debug_report_mode(args):
 def main():
     parser = argparse.ArgumentParser(description="Houdini Agent - Fast Batch Execution with Ollama Qwen 3 Coder")
     parser.add_argument("--task", "-t", required=False, help="Task description")
-    parser.add_argument("--model", "-m", default="qwen3-coder:480b-cloud", 
-                        help="Ollama model for planning (default: qwen3-coder:480b-cloud)")
+    parser.add_argument("--model", "-m", default=None, 
+                        help="Ollama model for planning (default: from config or qwen3-coder:480b-cloud)")
     parser.add_argument("--cloud-endpoint", help="Ollama cloud endpoint URL (e.g., https://cloud.ollama.ai)")
     parser.add_argument("--vision-steps", type=int, default=3, help="Max steps for vision actions")
     
@@ -285,7 +285,17 @@ def main():
     parser.add_argument("--train", dest="train_mode", action="store_true", default=False,
                         help="Run in training data collection mode (save full LLM logs to training_sessions)")
     
+    # Health Check
+    parser.add_argument("--health-check", dest="health_check", action="store_true", default=False,
+                        help="Run health check to verify Ollama, permissions, models, and directories")
+    
     args = parser.parse_args()
+    
+    # Handle health check mode
+    if getattr(args, 'health_check', False):
+        from .health_check import run_health_check
+        success = run_health_check()
+        sys.exit(0 if success else 1)
     
     # Handle debug report mode
     if getattr(args, 'debug_report', False) or getattr(args, 'debug_report_session', None) or getattr(args, 'debug_report_all', False):
@@ -310,6 +320,23 @@ def main():
             logger.info("⚡ Enhanced executor ENABLED (native accessibility + human cursor)")
         else:
             logger.info("🐌 Enhanced executor DISABLED (using basic PyAutoGUI)")
+
+    # ── Activate confidence & probability models ─────────────────
+    # These are conditionally imported in coordinators; eagerly load them
+    # here so failures are visible at startup, not buried in try/except.
+    try:
+        from .utils.execution_confidence import get_confidence_model
+        _cm = get_confidence_model()
+        logger.info(f"📊 Confidence model ACTIVE (calibration samples: {len(_cm.calibrator.calibration_data)})")
+    except Exception as e:
+        logger.warning(f"⚠️  Confidence model unavailable: {e}")
+
+    try:
+        from .utils.probability_model import get_probability_model
+        _pm = get_probability_model()
+        logger.info("🎲 Probability model ACTIVE (task flexibility + intent prediction)")
+    except Exception as e:
+        logger.warning(f"⚠️  Probability model unavailable: {e}")
 
     # Log architecture mode
     if getattr(args, 'use_langgraph', False):

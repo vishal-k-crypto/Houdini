@@ -63,6 +63,33 @@ textual>=0.45.0
 numpy>=1.24.0
 scipy>=1.11.0
 
+# Fuzzy logic (probability model — macro/micro spectrum)
+scikit-fuzzy>=0.4.2
+
+# Bayesian networks (probability model — intent reasoning; optional)
+# pgmpy>=0.1.25
+
+# -------------------------------------------------
+# HTTP API & Dashboard
+# -------------------------------------------------
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# -------------------------------------------------
+# Authentication (Phase 4)
+# -------------------------------------------------
+PyJWT>=2.8.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.6
+
+# -------------------------------------------------
+# Cross-platform accessibility (Phase 4 — Linux)
+# -------------------------------------------------
+# pyatspi (AT-SPI2 bindings) — install via system package on Linux:
+#   apt install python3-pyatspi
+# uiautomation — install on Windows:
+#   pip install uiautomation
+
 # -------------------------------------------------
 # macOS Accessibility (macOS only)
 # -------------------------------------------------

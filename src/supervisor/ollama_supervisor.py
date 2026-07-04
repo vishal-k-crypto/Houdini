@@ -8,7 +8,19 @@ from pathlib import Path
 from ..utils.ollama_client import OllamaClient
 from ..utils.logging import logger
 
-EXECUTOR_HISTORY_FILE = Path(__file__).parent.parent.parent / "data" / "executor_history.json"
+# Import centralized config
+try:
+    from config.settings import settings as _settings
+except ImportError:
+    _settings = None
+
+def _cfg(attr, fallback):
+    if _settings is not None:
+        return getattr(_settings, attr, fallback)
+    return fallback
+
+EXECUTOR_HISTORY_FILE = Path(_cfg("executor_history_file",
+    str(Path(__file__).parent.parent.parent / "data" / "executor_history.json")))
 
 
 class ExecutorHistory:
@@ -169,8 +181,8 @@ Be concise and actionable."""
         try:
             response = self.client.generate(
                 prompt,
-                temperature=0.3,
-                model="qwen2.5-coder:32b"  # Use available model
+                temperature=_cfg("supervisor_analysis_temperature", 0.3),
+                model=_cfg("supervisor_model", "qwen2.5-coder:32b")
             )
             return response
         except Exception as e:
@@ -206,20 +218,20 @@ Then explain briefly."""
             response = self.client.generate(
                 prompt,
                 temperature=0.1,
-                model="qwen2.5-coder:32b"
+                model=_cfg("supervisor_model", "qwen2.5-coder:32b")
             )
             
             response_lower = response.lower()
             if "yes" in response_lower[:50]:
                 return True
             elif "partial" in response_lower[:50]:
-                logger.warning("Task partially complete")
-                return True  # Accept partial completion
+                logger.warning("Task only partially complete - not accepting as success")
+                return False  # Partial completion is NOT full success
             else:
                 return False
         except Exception as e:
             logger.error(f"Failed to validate success: {e}")
-            return True  # Default to accepting success
+            return False  # Default to rejecting - require positive confirmation
     
     def get_executor_history(self) -> List[Dict]:
         """Get executor history for planner context."""

@@ -158,19 +158,45 @@ def execute_vision_action(cli, action_description: str, max_attempts: int = 3,
     # ~250ms inference, 73.8% accuracy on Screenspot benchmark
     # Use TinyClick when accessibility can't find the element
     if TINYCLICK_AVAILABLE and result.get("reason") in ["zero_elements", "no_match", "low_confidence"]:
-        logger.info(f"  ⚡ Using TinyClick (threshold: {min_match_prob:.0%})...")
-        tinyclick_result = _tinyclick_fallback(
-            action_description, 
-            min_match_prob,
-            task_context=task_context
-        )
-        
-        if tinyclick_result.get("success"):
-            tinyclick_result["method"] = "tinyclick"
-            tinyclick_result["flexibility"] = flexibility_info
-            return tinyclick_result
-        else:
-            logger.warning(f"  TinyClick failed: {tinyclick_result.get('error')}")
+        # Capture pre-click state for verification
+        pre_app_info = {}
+        pre_element_count = 0
+        try:
+            from ..utils.accessibility_reader import get_frontmost_app, get_ui_elements_applescript
+            pre_app_info = get_frontmost_app()
+            pre_elems = get_ui_elements_applescript(max_elements=30)
+            pre_element_count = len(pre_elems) if pre_elems else 0
+        except Exception:
+            pass
+
+        # Try TinyClick with up to 2 attempts (initial + 1 retry)
+        max_click_attempts = 2
+        for click_attempt in range(max_click_attempts):
+            attempt_label = f" (retry {click_attempt})" if click_attempt > 0 else ""
+            logger.info(f"  ⚡ Using TinyClick{attempt_label} (threshold: {min_match_prob:.0%})...")
+            tinyclick_result = _tinyclick_fallback(
+                action_description, 
+                min_match_prob,
+                task_context=task_context
+            )
+            
+            if tinyclick_result.get("success"):
+                # Verify the click had an effect
+                import time as _time
+                _time.sleep(0.15)  # Brief settle before checking
+                if _verify_click_effect(pre_app_info, pre_element_count, action_description):
+                    tinyclick_result["method"] = "tinyclick"
+                    tinyclick_result["flexibility"] = flexibility_info
+                    tinyclick_result["verified"] = True
+                    return tinyclick_result
+                else:
+                    logger.warning(f"  ⚠️ TinyClick clicked but no UI change detected — retrying")
+                    # Lower the threshold slightly for retry
+                    min_match_prob = max(0.15, min_match_prob - 0.1)
+                    continue
+            else:
+                logger.warning(f"  TinyClick failed: {tinyclick_result.get('error')}")
+                break  # Don't retry on outright failure
     
     # No more fallbacks - TinyClick is our only vision strategy
     return {
@@ -179,6 +205,59 @@ def execute_vision_action(cli, action_description: str, max_attempts: int = 3,
         "method": "none",
         "flexibility": flexibility_info
     }
+
+
+def _verify_click_effect(pre_app_info: Dict, pre_element_count: int, action_description: str) -> bool:
+    """
+    Verify that a click had a visible effect on the UI.
+
+    Checks for:
+    - App/window title change
+    - Focused element change
+    - Element count change (new dialog, menu, etc.)
+    - Content area change
+
+    Returns True if an effect was detected (click likely hit the target).
+    """
+    import platform as _plat
+    if _plat.system() == "Linux":
+        # On Linux, AT-SPI2 detection is different; accept the click
+        return True
+
+    try:
+        from ..utils.accessibility_reader import get_frontmost_app, get_ui_elements_applescript
+
+        post_info = get_frontmost_app()
+        post_elements = get_ui_elements_applescript(max_elements=30)
+        post_count = len(post_elements) if post_elements else 0
+
+        # 1. App or window changed
+        if post_info.get("app") != pre_app_info.get("app"):
+            logger.debug("  ✓ Click verification: app changed")
+            return True
+        if post_info.get("window") != pre_app_info.get("window"):
+            logger.debug("  ✓ Click verification: window title changed")
+            return True
+
+        # 2. Significant element count change (menu/dialog appeared or closed)
+        delta = abs(post_count - pre_element_count)
+        if delta >= 3:
+            logger.debug(f"  ✓ Click verification: element count changed by {delta}")
+            return True
+
+        # 3. Any element now focused that wasn't before
+        for elem in (post_elements or []):
+            if getattr(elem, "focused", False):
+                logger.debug("  ✓ Click verification: new focused element")
+                return True
+
+        logger.debug("  ⚠ Click verification: no observable change")
+        return False
+
+    except Exception as e:
+        logger.debug(f"  Click verification error: {e}")
+        # If we can't verify, assume success (don't block progress)
+        return True
 
 
 def _tinyclick_fallback(

@@ -6,6 +6,7 @@ prompts for Planner, Executor, and Supervisor to improve performance over time.
 """
 
 import json
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -50,6 +51,8 @@ class PromptEvolution:
         
         self.evolution_history = self._load_evolution_history()
         self.feedback_data = self._load_feedback_data()
+        # NEW: A/B variant registry
+        self.variant_registry = self._load_variant_registry()
     
     def _load_evolution_history(self) -> List[Dict]:
         """Load prompt evolution history."""
@@ -351,13 +354,13 @@ class PromptEvolution:
         """Get recent evolution learnings for a component."""
         evolutions = [e for e in self.evolution_history if e["component"] == component]
         return evolutions[-count:]
-    
+
     def reset_prompt(self, component: str):
         """Reset a prompt to its original version (removes all evolutions)."""
         # This would require storing original prompts separately
         # For now, manual restoration is needed
         logger.warning(f"Prompt reset not implemented. Manually restore {component}_prompt.md")
-    
+
     def get_success_rate(self, component: str, window: int = 100) -> float:
         """Calculate success rate for a component over recent executions."""
         recent = [f for f in self.feedback_data[-window:] if f["component"] == component]
@@ -365,15 +368,162 @@ class PromptEvolution:
             return 1.0
         successes = sum(1 for f in recent if f["success"])
         return successes / len(recent)
-    
+
+    # ============================================================
+    # A/B MUTATION TRACKING (NEW)
+    # ============================================================
+
+    def create_variant(
+        self,
+        component: str,
+        base_prompt: str,
+        mutation_name: str,
+        mutated_prompt: str,
+    ) -> str:
+        """
+        Register a new A/B prompt variant.
+
+        Returns a variant_id that should be passed to record_feedback so outcomes
+        can be attributed to the variant.
+        """
+        variant_id = self._variant_id(component, mutation_name)
+        entry = {
+            "variant_id": variant_id,
+            "component": component,
+            "mutation_name": mutation_name,
+            "created_at": datetime.now().isoformat(),
+            "base_prompt_hash": self._hash(base_prompt),
+            "mutated_prompt_hash": self._hash(mutated_prompt),
+        }
+        self.variant_registry[variant_id] = entry
+        self._save_variant_registry()
+        logger.info(f"🧬 Created prompt variant {variant_id} for {component}: {mutation_name}")
+        return variant_id
+
+    def _variant_id(self, component: str, mutation_name: str) -> str:
+        return hashlib.md5(f"{component}:{mutation_name}".encode()).hexdigest()[:12]
+
+    def _hash(self, text: str) -> str:
+        return hashlib.md5(text.encode()).hexdigest()[:12]
+
+    def _save_variant_registry(self):
+        try:
+            self.evolution_log_path.parent.mkdir(parents=True, exist_ok=True)
+            path = self.evolution_log_path.parent / "prompt_variant_registry.json"
+            with open(path, "w") as f:
+                json.dump(list(self.variant_registry.values()), f, indent=2)
+        except Exception as e:
+            logger.warning(f"Could not save variant registry: {e}")
+
+    def _load_variant_registry(self) -> Dict[str, Dict]:
+        try:
+            path = self.evolution_log_path.parent / "prompt_variant_registry.json"
+            if path.exists():
+                with open(path, "r") as f:
+                    data = json.load(f)
+                return {entry["variant_id"]: entry for entry in data}
+        except Exception as e:
+            logger.warning(f"Could not load variant registry: {e}")
+        return {}
+
+    def record_variant_outcome(
+        self,
+        variant_id: str,
+        success: bool,
+        execution_time: Optional[float] = None,
+    ):
+        """Record the outcome of an execution that used a specific variant."""
+        if variant_id not in self.variant_registry:
+            logger.debug(f"Unknown variant_id {variant_id}; ignoring outcome")
+            return
+        entry = self.variant_registry[variant_id]
+        if "outcomes" not in entry:
+            entry["outcomes"] = []
+        entry["outcomes"].append(
+            {
+                "timestamp": datetime.now().isoformat(),
+                "success": success,
+                "execution_time": execution_time,
+            }
+        )
+        self._save_variant_registry()
+
+    def get_best_variant(self, component: str) -> Optional[Dict[str, Any]]:
+        """Return the variant with the highest empirical success rate for a component."""
+        candidates = [
+            v for v in self.variant_registry.values() if v["component"] == component
+        ]
+        if not candidates:
+            return None
+
+        def score(variant: Dict) -> float:
+            outcomes = variant.get("outcomes", [])
+            if not outcomes:
+                return 0.0
+            successes = sum(1 for o in outcomes if o["success"])
+            # Laplace smoothing
+            return (successes + 1) / (len(outcomes) + 2)
+
+        best = max(candidates, key=score)
+        outcomes = best.get("outcomes", [])
+        successes = sum(1 for o in outcomes if o["success"])
+        return {
+            "variant_id": best["variant_id"],
+            "mutation_name": best["mutation_name"],
+            "success_rate": successes / max(len(outcomes), 1),
+            "smoothed_score": score(best),
+            "executions": len(outcomes),
+            "successes": successes,
+        }
+
+    def get_variant_statistics(self, component: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get performance statistics for all variants, optionally filtered by component."""
+        variants = self.variant_registry.values()
+        if component:
+            variants = [v for v in variants if v["component"] == component]
+        stats = []
+        for v in variants:
+            outcomes = v.get("outcomes", [])
+            successes = sum(1 for o in outcomes if o["success"])
+            stats.append(
+                {
+                    "variant_id": v["variant_id"],
+                    "component": v["component"],
+                    "mutation_name": v["mutation_name"],
+                    "executions": len(outcomes),
+                    "successes": successes,
+                    "success_rate": successes / max(len(outcomes), 1),
+                }
+            )
+        return stats
+
+    # ============================================================
+    # LIFECYCLE
+    # ============================================================
+
+    def __init__(self):
+        self.prompts_dir = PROMPTS_DIR
+        self.evolution_log_path = EVOLUTION_LOG
+        self.feedback_log_path = FEEDBACK_LOG
+
+        # Ensure directories exist
+        self.prompts_dir.mkdir(parents=True, exist_ok=True)
+        self.evolution_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.evolution_history = self._load_evolution_history()
+        self.feedback_data = self._load_feedback_data()
+        # NEW: A/B variant registry
+        self.variant_registry = self._load_variant_registry()
+
     def get_statistics(self) -> Dict[str, Any]:
         """Get overall system statistics."""
         stats = {
             "total_executions": len(self.feedback_data),
             "total_evolutions": len(self.evolution_history),
-            "components": {}
+            "components": {},
+            "best_variants": {},
         }
-        
+
         for component in ["planner", "executor", "supervisor"]:
             component_data = [f for f in self.feedback_data if f["component"] == component]
             stats["components"][component] = {
@@ -382,7 +532,10 @@ class PromptEvolution:
                 "prompt_version": self.get_prompt_version(component),
                 "failures": sum(1 for f in component_data if not f["success"])
             }
-        
+            best = self.get_best_variant(component)
+            if best:
+                stats["best_variants"][component] = best
+
         return stats
 
 

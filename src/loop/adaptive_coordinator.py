@@ -112,6 +112,38 @@ except ImportError:
     CONFIDENCE_MODEL_AVAILABLE = False
     logger.debug("Execution confidence model not available")
 
+# Import platform abstraction for cross-platform support
+try:
+    from ..platform.factory import get_platform, PlatformBundle
+    PLATFORM_AVAILABLE = True
+except ImportError:
+    PLATFORM_AVAILABLE = False
+    logger.debug("Platform abstraction not available, using direct macOS calls")
+
+# Import fast executor for batched/speculative execution
+try:
+    from .fast_executor import FastExecutor, ExecutionResult
+    FAST_EXECUTOR_AVAILABLE = True
+except ImportError:
+    FAST_EXECUTOR_AVAILABLE = False
+    FastExecutor = None  # type: ignore
+    ExecutionResult = None  # type: ignore
+    logger.debug("Fast executor not available in coordinator")
+
+# Import semantic cache for fast plan reuse
+try:
+    from ..utils.semantic_cache import lookup_plan, store_plan
+    SEMANTIC_CACHE_AVAILABLE = True
+except ImportError:
+    SEMANTIC_CACHE_AVAILABLE = False
+    lookup_plan = store_plan = None
+
+# Import event bus for external listeners (API / dashboard)
+try:
+    from ..utils.event_bus import event_bus as _event_bus
+except ImportError:
+    _event_bus = None
+
 # Import lesson store for automatic failure recording
 try:
     from ..utils.lesson_store import lesson_store
@@ -119,6 +151,18 @@ try:
 except ImportError:
     LESSON_STORE_AVAILABLE = False
     logger.debug("Lesson store not available in coordinator")
+
+# Import centralized config
+try:
+    from config.settings import settings as _settings
+except ImportError:
+    _settings = None
+
+def _cfg(attr: str, fallback):
+    """Get config value with fallback if config module unavailable."""
+    if _settings is not None:
+        return getattr(_settings, attr, fallback)
+    return fallback
 
 
 class AdaptivePhase(str, Enum):
@@ -196,10 +240,10 @@ class AdaptiveState:
     # Stuck detection state
     step_attempt_count: int = 0  # How many times current step has been attempted
     last_attempted_step_idx: int = -1  # Last step index that was attempted
-    max_step_attempts: int = 5  # Max attempts before forcing advancement
+    max_step_attempts: int = field(default_factory=lambda: _cfg("max_step_attempts", 5))  # Max attempts before forcing advancement
     
     # Evolution limits (prevent infinite evolution loops)
-    max_evolution_attempts: int = 3  # Max times supervisor can evolve task
+    max_evolution_attempts: int = field(default_factory=lambda: _cfg("max_evolution_attempts", 3))  # Max times supervisor can evolve task
     evolution_attempt_count: int = 0  # Current evolution attempts
     
     # Timestamps
@@ -230,15 +274,27 @@ class AdaptiveLoopCoordinator:
     - Enables real-time task evolution
     """
     
+    # DOM element for terminal display (optional)
+    _terminal_display: Optional[Any] = None
+
     def __init__(self,
                  client: OllamaClient,
                  enable_thinking_window: bool = True,
-                 max_iterations: int = 100,
+                 max_iterations: int = None,
                  screen_capture_interval: float = 0.5):
         self.client = client
         self.enable_thinking_window = enable_thinking_window
-        self.max_iterations = max_iterations
+        self.max_iterations = max_iterations or _cfg("max_iterations", 100)
         self.screen_capture_interval = screen_capture_interval
+        
+        # Platform abstraction (enables Linux/OSWorld support)
+        self._platform: Optional[PlatformBundle] = None
+        if PLATFORM_AVAILABLE:
+            try:
+                self._platform = get_platform()
+                logger.info(f"AdaptiveCoordinator: Platform = {self._platform.name}")
+            except Exception as e:
+                logger.debug(f"Could not init platform bundle: {e}")
         
         # Current state
         self.state: Optional[AdaptiveState] = None
@@ -255,7 +311,49 @@ class AdaptiveLoopCoordinator:
                 logger.debug("AdaptiveCoordinator: Event-driven UI wait system initialized")
             except Exception as e:
                 logger.debug(f"Could not init UI wait system: {e}")
-    
+
+        # Fast executor for batched/speculative action execution (initialized lazily)
+        self._fast_executor: Optional[FastExecutor] = None
+
+    def _fast_exec(self) -> Optional[FastExecutor]:
+        """Lazy initialize FastExecutor with this coordinator's vision handler."""
+        if self._fast_executor is not None or not FAST_EXECUTOR_AVAILABLE:
+            return self._fast_executor
+        try:
+            self._fast_executor = FastExecutor(
+                vision_handler=self._vision_handler_for_fast_executor,
+                enable_cache=True,
+                enable_patterns=True,
+                enable_confidence=CONFIDENCE_MODEL_AVAILABLE,
+            )
+            logger.debug("AdaptiveCoordinator: FastExecutor initialized")
+        except Exception as e:
+            logger.debug(f"Could not init FastExecutor: {e}")
+        return self._fast_executor
+
+    def _vision_handler_for_fast_executor(self, action: Dict[str, Any]) -> Dict[str, Any]:
+        """Bridge FastExecutor vision actions to the existing vision executor."""
+        try:
+            from ..agents.vision_executor import execute_vision_action
+            from ..utils.gemini_client import GeminiCLI
+            cli = GeminiCLI()
+            element = action.get("params", {}).get("element", "")
+            result = execute_vision_action(
+                cli,
+                f"click: {element}",
+                max_attempts=2,
+                execution_params=self.state.execution_params if self.state else None,
+            )
+            return {
+                "success": result.get("success", False),
+                "error": result.get("error"),
+                "coordinates": result.get("coordinates"),
+                "method": result.get("method", "vision"),
+            }
+        except Exception as e:
+            logger.error(f"FastExecutor vision bridge failed: {e}")
+            return {"success": False, "error": str(e)}
+
     def _set_phase(self, new_phase: AdaptivePhase):
         """Set phase and log to replay system."""
         old_phase = self.state.phase if self.state else AdaptivePhase.PLANNING
@@ -543,8 +641,11 @@ class AdaptiveLoopCoordinator:
             self.state.task_flexibility = None
     
     def _get_current_app_name(self) -> Optional[str]:
-        """Get current frontmost app name for context."""
+        """Get current frontmost app name (cross-platform)."""
         try:
+            if self._platform:
+                info = self._platform.accessibility.get_frontmost_app_info()
+                return info.get("app")
             from ..utils.accessibility_reader import get_frontmost_app
             app_info = get_frontmost_app()
             return app_info.get('app')
@@ -630,6 +731,9 @@ TASK: {task}
 - Press key: "key:return" or "key:escape" or "key:tab"
 - Wait: "wait:1.5" (seconds)
 - Vision click: "click:description of element to click"
+- Scroll: "scroll:down,3" or "scroll:up,5" (direction,amount)
+- Drag: "drag:100,200,300,400" (start_x,start_y,end_x,end_y)
+- Clipboard: "clipboard:copy" or "clipboard:paste" or "clipboard:cut" or "clipboard:select_all"
 
 ## STEP TYPE RULES:
 
@@ -720,20 +824,27 @@ Generate the macro plan for the task:"""
         self._show("executor", f"━━━ Step: {step_desc} ━━━", "executing")
         
         # ========== FAST PATH: Semantic Check (no LLM) ==========
-        # DISABLED: Sematic check blocks "Open App" commands because it checks preconditions
-        # We want to allow "blind" execution as per user request
-        # semantic_result = self._fast_semantic_check(macro_step)
-        # if semantic_result and semantic_result.should_interrupt:
-        #     logger.warning(f"⚡ Semantic mismatch detected (fast path): {semantic_result.reason}")
-        #     self._show("supervisor", f"⚡ Wrong app/window: {semantic_result.reason}", "warning")
-        #     return {
-        #         "complete": False,
-        #         "needs_supervisor": True,
-        #         "reason": semantic_result.reason,
-        #         "semantic_mismatch": True,
-        #         "expected_app": semantic_result.expected,
-        #         "actual_app": semantic_result.actual
-        #     }
+        # Re-enabled with fix: skip for app-launching steps where the whole
+        # point of the step is to CHANGE the active app.
+        step_lower = step_desc.lower()
+        is_app_changing_step = any(kw in step_lower for kw in [
+            "open ", "launch ", "start ", "activate ", "switch to ",
+            "go to ", "navigate to ", "run ",
+        ])
+        
+        if not is_app_changing_step:
+            semantic_result = self._fast_semantic_check(macro_step)
+            if semantic_result and semantic_result.should_interrupt:
+                logger.warning(f"⚡ Semantic mismatch detected (fast path): {semantic_result.reason}")
+                self._show("supervisor", f"⚡ Wrong app/window: {semantic_result.reason}", "warning")
+                return {
+                    "complete": False,
+                    "needs_supervisor": True,
+                    "reason": semantic_result.reason,
+                    "semantic_mismatch": True,
+                    "expected_app": semantic_result.expected,
+                    "actual_app": semantic_result.actual
+                }
         
         # ========== SLOW PATH: Full Screen Analysis ==========
         # Get current screen context
@@ -853,56 +964,18 @@ Generate the macro plan for the task:"""
             logger.info(f"✅ Using {len(suggested_actions)} suggested actions from planner (no LLM call needed)")
             self._show("executor", f"✅ Using pre-planned actions ({len(suggested_actions)} actions)", "info")
             
-            # Convert string actions to MicroAction objects
+            # Use robust action parser to handle format variations
+            from ..utils.action_parser import parse_actions
+            parsed = parse_actions(suggested_actions)
+            
             micro_actions = []
-            for action_str in suggested_actions:
-                if isinstance(action_str, str):
-                    # Parse "hotkey:command,space" format
-                    if ":" in action_str:
-                        parts = action_str.split(":", 1)
-                        action_type = parts[0]
-                        params_str = parts[1] if len(parts) > 1 else ""
-                        
-                        if action_type == "hotkey":
-                            keys = [k.strip() for k in params_str.split(",")]
-                            micro_actions.append(MicroAction(
-                                action_type="hotkey",
-                                params={"keys": keys},
-                                description=f"Press {'+'.join(keys)}"
-                            ))
-                        elif action_type == "type":
-                            micro_actions.append(MicroAction(
-                                action_type="type",
-                                params={"text": params_str},
-                                description=f"Type: {params_str}"
-                            ))
-                        elif action_type == "key":
-                            micro_actions.append(MicroAction(
-                                action_type="key",
-                                params={"key": params_str},
-                                description=f"Press {params_str}"
-                            ))
-                        elif action_type == "wait":
-                            micro_actions.append(MicroAction(
-                                action_type="wait",
-                                params={"seconds": float(params_str)},
-                                description=f"Wait {params_str}s"
-                            ))
-                        elif action_type == "click":
-                            # VISION-BASED CLICK: Use vision executor to find and click element
-                            micro_actions.append(MicroAction(
-                                action_type="click",
-                                params={"element": params_str},
-                                description=f"Click: {params_str}",
-                                requires_screen=True  # Vision actions require screen
-                            ))
-                elif isinstance(action_str, dict):
-                    # Already in proper format
-                    micro_actions.append(MicroAction(
-                        action_type=action_str.get("type"),
-                        params=action_str.get("params", {}),
-                        description=action_str.get("description", "")
-                    ))
+            for p in parsed:
+                micro_actions.append(MicroAction(
+                    action_type=p["type"],
+                    params=p.get("params", {}),
+                    description=p.get("description", ""),
+                    requires_screen=p.get("requires_screen", False),
+                ))
             
             if micro_actions:
                 return micro_actions
@@ -1076,6 +1149,16 @@ Generate actions:"""
                     
                     logger.info(f"📊 Action confidence: {rating.score:.1f}/10 ({rating.level.value})")
                     
+                    # Emit to event bus for API / dashboard observers
+                    if _event_bus:
+                        _event_bus.emit("confidence", {
+                            "score": rating.score,
+                            "level": rating.level.value,
+                            "decision": rating.decision.value,
+                            "action": action.description,
+                            "action_type": action.action_type,
+                        })
+
                     # TIER 1: HIGH/CRITICAL (7-10) - Execute immediately
                     if rating.score >= 7.0:
                         self._show("executor", f"✅ High confidence ({rating.score:.1f}) - executing", "success")
@@ -1289,6 +1372,63 @@ Generate actions:"""
                             logger.warning(f"Failed to activate app: {app_name}")
                             return False
                 
+                elif action.action_type == "scroll":
+                    # Scroll in the specified direction
+                    direction = action.params.get("direction", "down").lower()
+                    amount = action.params.get("amount", 3)
+                    
+                    if direction in ("down", "d"):
+                        pyautogui.scroll(-amount)
+                    elif direction in ("up", "u"):
+                        pyautogui.scroll(amount)
+                    elif direction in ("left", "l"):
+                        pyautogui.hscroll(-amount)
+                    elif direction in ("right", "r"):
+                        pyautogui.hscroll(amount)
+                    
+                    logger.debug(f"Scrolled {direction} by {amount}")
+                    self._smart_wait_after("click")
+                
+                elif action.action_type == "drag":
+                    # Drag from (start_x,start_y) to (end_x,end_y)
+                    sx = action.params.get("start_x")
+                    sy = action.params.get("start_y")
+                    ex = action.params.get("end_x")
+                    ey = action.params.get("end_y")
+                    
+                    if all(v is not None for v in (sx, sy, ex, ey)):
+                        pyautogui.moveTo(sx, sy, duration=0.15)
+                        time.sleep(0.05)
+                        pyautogui.mouseDown()
+                        time.sleep(0.05)
+                        pyautogui.moveTo(ex, ey, duration=0.3)
+                        time.sleep(0.05)
+                        pyautogui.mouseUp()
+                        logger.debug(f"Dragged ({sx},{sy}) → ({ex},{ey})")
+                    else:
+                        # Drag described by element names — use vision to find coordinates
+                        desc = action.params.get("description", action.description)
+                        logger.warning(f"Drag by description not yet supported: {desc}")
+                    self._smart_wait_after("click")
+                
+                elif action.action_type == "clipboard":
+                    # Clipboard operations: copy, cut, paste, select_all
+                    op = action.params.get("operation", "paste").lower()
+                    # Determine modifier key based on platform
+                    mod = "ctrl" if (self._platform and self._platform.name == "linux") else "command"
+                    
+                    if op == "copy":
+                        pyautogui.hotkey(mod, "c")
+                    elif op == "cut":
+                        pyautogui.hotkey(mod, "x")
+                    elif op == "paste":
+                        pyautogui.hotkey(mod, "v")
+                    elif op == "select_all":
+                        pyautogui.hotkey(mod, "a")
+                    
+                    logger.debug(f"Clipboard: {op}")
+                    self._smart_wait_after("hotkey")
+                
                 # Record action
                 duration_ms = (time.time() - start_time) * 1000
                 self.state.executed_actions.append({
@@ -1391,24 +1531,54 @@ Generate actions:"""
     
     def _activate_app(self, app_name: str) -> bool:
         """
-        Activate an application using AppleScript.
-        More reliable than relying on Spotlight.
+        Activate an application (cross-platform).
+        Uses AppleScript on macOS, wmctrl/xdotool on Linux.
         """
         import subprocess
         
         logger.info(f"🚀 Activating app: {app_name}")
-        
-        # Clean up app name - handle common variations
         clean_name = app_name.strip()
         
-        # Common app name mappings
+        # Detect platform
+        is_linux = self._platform and self._platform.name == "linux"
+        
+        if is_linux:
+            # Linux: use wmctrl or xdotool
+            try:
+                # Try wmctrl first
+                result = subprocess.run(
+                    ["wmctrl", "-a", clean_name],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    logger.info(f"✅ Activated {clean_name} via wmctrl")
+                    return True
+            except FileNotFoundError:
+                pass
+            
+            try:
+                # Fallback: xdotool
+                result = subprocess.run(
+                    ["xdotool", "search", "--name", clean_name, "windowactivate"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    logger.info(f"✅ Activated {clean_name} via xdotool")
+                    return True
+            except FileNotFoundError:
+                pass
+            
+            logger.warning(f"⚠️ Could not activate {clean_name} on Linux (no wmctrl/xdotool)")
+            return False
+        
+        # macOS: AppleScript
         app_mappings = {
             "safari": "Safari",
             "chrome": "Google Chrome",
             "firefox": "Firefox",
             "terminal": "Terminal",
             "finder": "Finder",
-            "youtube": "Safari",  # YouTube is a website, use Safari
+            "youtube": "Safari",
         }
         
         actual_app = app_mappings.get(clean_name.lower(), clean_name)
@@ -1510,25 +1680,38 @@ Generate actions:"""
     
     def _open_url_in_browser(self, url: str, browser: str = "Safari") -> bool:
         """
-        Open a URL in a browser using AppleScript.
-        This is MORE RELIABLE than typing the URL manually.
-        
-        Args:
-            url: The URL to open
-            browser: Browser name (Safari, Google Chrome, Firefox)
-            
-        Returns:
-            True if successful, False otherwise
+        Open a URL in a browser (cross-platform).
+        Uses AppleScript on macOS, xdg-open on Linux.
         """
         import subprocess
         
         logger.info(f"🌐 Opening URL: {url} in {browser}")
         
-        # Ensure URL has protocol
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         
-        # Browser-specific AppleScript
+        is_linux = self._platform and self._platform.name == "linux"
+        
+        if is_linux:
+            try:
+                subprocess.run(["xdg-open", url], check=True, timeout=10)
+                logger.info(f"✅ Opened URL via xdg-open")
+                time.sleep(1.0)
+                return True
+            except Exception as e:
+                logger.warning(f"xdg-open failed: {e}")
+                # Fallback: try chromium/firefox directly
+                for cmd in ["chromium", "chromium-browser", "google-chrome", "firefox"]:
+                    try:
+                        subprocess.Popen([cmd, url])
+                        logger.info(f"✅ Opened URL via {cmd}")
+                        time.sleep(1.0)
+                        return True
+                    except FileNotFoundError:
+                        continue
+                return False
+        
+        # macOS: AppleScript
         browser_lower = browser.lower()
         
         try:
@@ -1865,30 +2048,21 @@ Supervisor decision:"""
         success_criteria = self.state.macro_plan.success_criteria if self.state.macro_plan else "Task completed"
         expected_outcome = self.state.macro_plan.expected_outcome if self.state.macro_plan else "Goal achieved"
         
-        # FALLBACK: For zero-element screens (video players, full-screen content)
-        # The accessibility API returns 0 elements for video playback pages
-        # In this case, use heuristic verification based on app + completed steps
-        if len(screen.visible_elements) == 0:
-            logger.info("  ℹ️  Zero accessible elements - using fallback verification")
+        # ZERO-ELEMENT SCREENS: Video players, full-screen content, etc.
+        # The accessibility API may return 0 elements. Instead of auto-completing,
+        # we take a screenshot for visual verification and cap confidence.
+        zero_element_mode = len(screen.visible_elements) == 0
+        screenshot_description = None
+        if zero_element_mode:
+            logger.info("  ℹ️  Zero accessible elements - using screenshot-based verification")
+            self._show("supervisor", "Zero elements detected - verifying via screenshot", "verifying")
             
-            app_ok = self._app_matches_task(screen.app_name, self.state.task)
-            all_steps_done = (
-                self.state.macro_plan and 
-                self.state.current_macro_step_idx >= len(self.state.macro_plan.macro_steps)
-            )
-            has_window_content = bool(screen.window_title) and len(screen.window_title) > 5
-            
-            if app_ok and all_steps_done:
-                logger.info("  ✅ Fallback verification passed: correct app + all steps complete")
-                self._show("supervisor", "✅ Complete (fallback: all steps done in correct app)", "verification")
-                self._commit_pending_outcomes(success=True)
-                return {"complete": True, "confidence": 0.75}
-            
-            # If we're in right app with content, trust the execution more
-            if app_ok and has_window_content and self.state.current_macro_step_idx > 0:
-                # At least some steps completed in the right context
-                logger.info(f"  ⚠️ Fallback: {self.state.current_macro_step_idx} steps done in correct app")
-                # Lower the LLM's judgment weight when we can't see elements
+            # Try to capture a screenshot for visual context
+            screenshot_description = self._describe_screenshot_for_verification()
+            if screenshot_description:
+                elements_summary = f"(no accessibility elements - screenshot analysis: {screenshot_description})"
+            else:
+                elements_summary = "(no elements detected, no screenshot available)"
         
         prompt = f"""You are the SUPERVISOR. Verify if the task is ACTUALLY complete.
 
@@ -1945,9 +2119,22 @@ Verification result:"""
                       f"{'✅ Complete' if complete else '❌ Incomplete'} ({confidence:.0%}): {reason}", 
                       "verification")
             
-            # IMPROVED: Lower threshold from 0.7 to 0.6 to reduce infinite loops
-            # Tasks with 60%+ confidence are considered complete
-            if complete and confidence >= 0.6:
+            # Cap confidence when zero-element mode was used (no accessibility data)
+            # With screenshot analysis: allow up to 0.80 (can still pass the gate)
+            # Without screenshot: cap at 0.65 (blocks auto-completion, forces evolution)
+            if zero_element_mode:
+                has_screenshot_evidence = screenshot_description is not None
+                max_confidence = (
+                    _cfg("zero_element_screenshot_cap", 0.80) if has_screenshot_evidence 
+                    else _cfg("zero_element_no_screenshot_cap", 0.65)
+                )
+                if confidence > max_confidence:
+                    logger.info(f"  ⚠️ Capping confidence from {confidence:.0%} to {max_confidence:.0%} (zero-element, screenshot={'yes' if has_screenshot_evidence else 'no'})")
+                    confidence = max_confidence
+            
+            # Require high confidence for completion to avoid false positives
+            completion_threshold = _cfg("completion_confidence_threshold", 0.75)
+            if complete and confidence >= completion_threshold:
                 logger.info(f"✅ Task verified complete: {reason}")
                 # COMMIT DELAYED REWARDS: Now we know the macro step truly succeeded
                 self._commit_pending_outcomes(success=True)
@@ -1983,10 +2170,9 @@ Verification result:"""
             logger.warning(f"⚠️ Max evolution attempts ({self.state.max_evolution_attempts}) reached")
             self._show("supervisor", "Max evolution attempts reached - task may be complete enough", "warning")
             
-            # Force task completion even if not perfect
-            # Sometimes "good enough" is better than infinite loops
-            logger.info("✅ Forcing task completion after max evolution attempts")
-            return False  # Signal that evolution should stop
+            # Stop evolution - task could not be completed within allowed attempts
+            logger.warning("❌ Task incomplete after max evolution attempts - marking as failed")
+            return False  # Signal that evolution should stop (sets phase to FAILED)
         
         logger.info("🔄 Supervisor evolving task...")
         self._show("supervisor", "Evolving task based on current state", "evolving")
@@ -2115,13 +2301,82 @@ Evolution plan:"""
         if "spotify" in task_lower or "music" in task_lower:
             return "spotify" in app_lower or "music" in app_lower
         
-        return True  # Default: don't reject unknown tasks
+        # Conservative default: reject unknown task-app mappings
+        # This prevents false completion when we can't verify the right app is open
+        logger.debug(f"  ⚠️ _app_matches_task: no known mapping for task='{task[:50]}' app='{app_name}'")
+        return False
     
     # ========== SCREEN CONTEXT ==========
     
-    def _capture_screen_context(self) -> ScreenContext:
-        """Capture current screen state for analysis."""
+    def _describe_screenshot_for_verification(self) -> Optional[str]:
+        """
+        Take a screenshot and describe it using a vision model.
+        Used as fallback when accessibility elements are unavailable (e.g. video players).
+        Returns a text description of the screen, or None if screenshot fails.
+        """
         try:
+            import subprocess, tempfile, os
+            
+            # Take screenshot using macOS screencapture
+            fd, screenshot_path = tempfile.mkstemp(suffix=".png", prefix="verify_")
+            os.close(fd)
+            subprocess.run(["screencapture", "-x", screenshot_path], check=True, capture_output=True)
+            
+            if not os.path.exists(screenshot_path) or os.path.getsize(screenshot_path) == 0:
+                return None
+            
+            # Try to use LLM with vision to describe the screenshot
+            try:
+                import base64
+                with open(screenshot_path, "rb") as f:
+                    img_data = base64.b64encode(f.read()).decode("utf-8")
+                
+                response = self.client.generate(
+                    prompt="Describe what you see on this screen in 2-3 sentences. Focus on: which app is open, what content is visible, and any notable UI state (dialogs, errors, loading).",
+                    images=[img_data],
+                    temperature=0.1
+                )
+                return response.strip() if response else None
+            except Exception as vision_err:
+                logger.debug(f"Vision-based screenshot description unavailable: {vision_err}")
+                # Fallback: return basic file info as evidence screenshot was taken
+                file_size = os.path.getsize(screenshot_path)
+                return f"Screenshot captured ({file_size} bytes) but vision model unavailable"
+            finally:
+                try:
+                    os.unlink(screenshot_path)
+                except OSError:
+                    pass
+                    
+        except Exception as e:
+            logger.debug(f"Screenshot capture failed: {e}")
+            return None
+    
+    def _capture_screen_context(self) -> ScreenContext:
+        """Capture current screen state using the platform abstraction layer."""
+        try:
+            # Use platform bundle when available (works on macOS + Linux)
+            if self._platform:
+                app_info = self._platform.accessibility.get_frontmost_app_info()
+                tree = self._platform.accessibility.get_ui_tree(max_depth=3)
+                elements = []
+                if tree:
+                    # Flatten tree to element list for compatibility
+                    def _collect(node, out, limit=50):
+                        if len(out) >= limit:
+                            return
+                        out.append(node)
+                        for child in (node.children or []):
+                            _collect(child, out, limit)
+                    _collect(tree, elements)
+
+                return ScreenContext(
+                    app_name=app_info.get("app", "Unknown"),
+                    window_title=app_info.get("window", ""),
+                    visible_elements=elements,
+                )
+
+            # Fallback: direct macOS accessibility reader
             from ..utils.accessibility_reader import get_frontmost_app, get_ui_elements_applescript
             
             app_info = get_frontmost_app()
@@ -2506,10 +2761,17 @@ IMPORTANT:
     # ========== HELPERS ==========
     
     def _show(self, component: str, message: str, msg_type: str = "info"):
-        """Show message in thinking window."""
+        """Show message in thinking window and emit to the API dashboard."""
+        if _event_bus:
+            _event_bus.emit("thinking", {
+                "component": component,
+                "message": message,
+                "type": msg_type,
+                "phase": self.state.phase.value if self.state else None,
+            })
         if not self.enable_thinking_window:
             return
-            
+
         try:
             if component == "planner":
                 show_planner_thinking(message)
@@ -2521,3 +2783,27 @@ IMPORTANT:
                 show_thinking(component, message, msg_type)
         except:
             pass
+
+    def _capture_screen_context(self) -> Optional[ScreenContext]:
+        """Capture current screen context and broadcast screenshot for the dashboard."""
+        context = self.__capture_screen_context()
+        if context and context.screenshot_path:
+            try:
+                from pathlib import Path
+                img_bytes = Path(context.screenshot_path).read_bytes()
+                import base64
+                b64 = base64.b64encode(img_bytes).decode("utf-8")
+                if _event_bus:
+                    _event_bus.emit("screenshot", {
+                        "image_base64": f"data:image/png;base64,{b64}",
+                        "timestamp": context.timestamp.isoformat(),
+                    })
+            except Exception:
+                pass
+        return context
+
+    def __capture_screen_context(self) -> Optional[ScreenContext]:
+        return self._old_capture_screen_context()
+
+    def _old_capture_screen_context(self) -> Optional[ScreenContext]:
+        """Original screen capture logic (renamed)."""

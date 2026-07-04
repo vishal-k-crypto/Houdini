@@ -631,8 +631,24 @@ def create_vision_feedback_graph(memory: VisionMemory, localizer) -> StateGraph:
         
         # Basic bounds check
         x, y = coords
-        # TODO: Get actual screen size
-        if x < 0 or y < 0 or x > 3000 or y > 2000:
+        # Get actual screen size from the system
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["system_profiler", "SPDisplaysDataType"],
+                capture_output=True, text=True, timeout=5
+            )
+            # Parse resolution like "Resolution: 3024 x 1964 Retina"
+            import re
+            match = re.search(r"Resolution:\s+(\d+)\s*x\s*(\d+)", result.stdout)
+            if match:
+                screen_w, screen_h = int(match.group(1)), int(match.group(2))
+            else:
+                screen_w, screen_h = 3000, 2000
+        except Exception:
+            screen_w, screen_h = 3000, 2000
+        
+        if x < 0 or y < 0 or x > screen_w or y > screen_h:
             return {"click_success": False, "verification_method": "out_of_bounds"}
         
         # Confidence threshold

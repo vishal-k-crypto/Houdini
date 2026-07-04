@@ -1,10 +1,22 @@
 # Loop module for continuous execution
+#
+# PRIMARY ARCHITECTURE: AdaptiveLoopCoordinator (default)
+#   - Macro planner → micro executor → adaptive supervisor
+#   - Self-healing with real-time task evolution
+#
+# EXPERIMENTAL: LangGraphCoordinator (opt-in via --langgraph)
+#   - State machine with built-in checkpointing
+#
+# DEPRECATED: LoopCoordinator / ExecutorLoop / SupervisorLoop (--legacy)
+#   - Original architecture, kept for backwards compatibility
+#
 from .loop_state import LoopState
-from .executor_loop import ExecutorLoop
-from .supervisor_loop import SupervisorLoop
-from .loop_coordinator import LoopCoordinator
-from .recovery_handler import RecoveryHandler
+from .executor_loop import ExecutorLoop  # Used by legacy LoopCoordinator
+from .supervisor_loop import SupervisorLoop  # Used by legacy LoopCoordinator
+from .loop_coordinator import LoopCoordinator  # DEPRECATED: use AdaptiveLoopCoordinator
+from .recovery_handler import RecoveryHandler, RecoveryRouter, FailureCategory, RecoveryStrategy
 from .adaptive_coordinator import AdaptiveLoopCoordinator, AdaptiveState, AdaptivePhase
+from .fast_executor import FastExecutor, ExecutionResult
 
 # LangGraph-based coordinator (new architecture)
 try:
@@ -29,9 +41,14 @@ __all__ = [
     "SupervisorLoop", 
     "LoopCoordinator", 
     "RecoveryHandler",
+    "RecoveryRouter",
+    "FailureCategory",
+    "RecoveryStrategy",
     "AdaptiveLoopCoordinator",
     "AdaptiveState",
     "AdaptivePhase",
+    "FastExecutor",
+    "ExecutionResult",
     # LangGraph exports
     "LangGraphCoordinator",
     "run_with_langgraph",

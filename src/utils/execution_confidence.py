@@ -1143,30 +1143,93 @@ class ExecutionConfidenceModel:
     ) -> float:
         """
         Calculate confidence based on historical success rate.
-        
+
         Uses an ENSEMBLE of:
         1. Thompson Sampling (Bayesian bandit - exploration/exploitation)
         2. Q-Learning (RL state-action values)
-        
-        This combines two different learning paradigms for robust estimates.
+        3. Per-provider / per-pattern prior (NEW)
+
+        This combines multiple learning paradigms and runtime priors
+        for robust, calibrated estimates.
         """
         context_key = self._get_context_key(context) if context else None
-        
+
         # 1. Thompson Sampling confidence
         if np.random.random() < 0.1:  # 10% exploration
             thompson_conf = self.thompson.sample_confidence(action_type, context_key)
         else:
             thompson_conf = self.thompson.get_expected_confidence(action_type, context_key)
-        
+
         # 2. Q-Learning confidence
         q_conf = self.q_learner.get_confidence(action_type, context)
-        
+
         # 3. Ensemble: weighted average
-        # Thompson captures: bandit-style success rates
-        # Q-Learning captures: state-dependent action values
         ensemble_conf = 0.5 * thompson_conf + 0.5 * q_conf
-        
-        return ensemble_conf
+
+        # 4. Apply per-provider prior if available (NEW)
+        provider = context.get("provider") if context else None
+        provider_prior = self._provider_prior(provider) if provider else 1.0
+
+        # 5. Apply pattern prior if available (NEW)
+        pattern_conf = context.get("pattern_confidence") if context else None
+        if pattern_conf is not None and 0.0 <= pattern_conf <= 1.0:
+            ensemble_conf = 0.7 * ensemble_conf + 0.3 * pattern_conf
+
+        return max(0.0, min(1.0, ensemble_conf * provider_prior))
+
+    def _provider_prior(self, provider: Optional[str]) -> float:
+        """Small per-provider reliability prior. Defaults to neutral."""
+        if not provider:
+            return 1.0
+        priors = getattr(self, "_provider_priors", None)
+        if priors is None:
+            priors = self._load_provider_priors()
+            self._provider_priors = priors
+        return priors.get(provider.lower(), 1.0)
+
+    def _load_provider_priors(self) -> Dict[str, float]:
+        """Load provider priors from disk, or start with neutral defaults."""
+        path = self.data_dir / "provider_priors.json"
+        defaults = {
+            "ollama": 1.0,
+            "gemini": 1.0,
+            "openai": 1.0,
+            "anthropic": 1.0,
+            "local": 0.95,
+        }
+        try:
+            if path.exists():
+                with open(path) as f:
+                    data = json.load(f)
+                defaults.update(data)
+        except Exception as e:
+            logger.debug(f"Could not load provider priors: {e}")
+        return defaults
+
+    def _save_provider_priors(self):
+        """Persist provider priors to disk."""
+        path = self.data_dir / "provider_priors.json"
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(self._provider_priors, f, indent=2)
+        except Exception as e:
+            logger.debug(f"Could not save provider priors: {e}")
+
+    def update_provider_prior(self, provider: str, success: bool, weight: float = 0.05):
+        """Update a provider reliability prior based on an observed outcome."""
+        if not provider:
+            return
+        provider = provider.lower()
+        if not hasattr(self, "_provider_priors"):
+            self._provider_priors = self._load_provider_priors()
+        current = self._provider_priors.get(provider, 1.0)
+        if success:
+            current = current + weight * (1.0 - current)
+        else:
+            current = max(0.1, current - weight * current)
+        self._provider_priors[provider] = current
+        self._save_provider_priors()
     
     def _calculate_context_fit(
         self, action_type: str, action_params: Dict, context: Optional[Dict]
@@ -1478,16 +1541,22 @@ class ExecutionConfidenceModel:
     ):
         """
         Record the outcome of an action for learning.
-        
+
         This updates ALL learning components:
         - Calibration model (for accurate confidence estimates)
         - Thompson Sampling (for action selection - bandit)
         - Conformal Prediction (for coverage guarantees)
         - Q-Learning (for state-action value estimation - RL)
+        - Provider priors (NEW)
         - Execution history
         """
         context_key = self._get_context_key(context) if context else ""
-        
+
+        # Update provider prior if provider is known (NEW)
+        provider = context.get("provider") if context else None
+        if provider:
+            self.update_provider_prior(provider, success)
+
         # Create outcome record
         outcome = ActionOutcome(
             action_hash=hashlib.md5(
