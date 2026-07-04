@@ -1,18 +1,17 @@
-<div align="center">
-
 # 🤖 Houdini Agent
 
-**AI-Powered macOS Automation with Self-Evolving Intelligence**
+**AI-Powered Desktop Automation with Provider-Agnostic Intelligence**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![macOS](https://img.shields.io/badge/platform-macOS-black.svg)](https://www.apple.com/macos/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/vishal-k-crypto/Houdini/actions/workflows/ci.yml/badge.svg)](https://github.com/vishal-k-crypto/Houdini/actions/workflows/ci.yml)
 
 <p align="center">
-  <strong>Automate complex tasks on macOS using local AI models with vision capabilities</strong>
+  <strong>Automate complex desktop tasks using any LLM provider — local, cloud, or browser-based</strong>
 </p>
 
-[Features](#-features) • [Quick Start](#-quick-start) • [Installation](#-installation) • [Usage](#-usage) • [Architecture](#-architecture)
+[Features](#-features) • [Quick Start](#-quick-start) • [Installation](#-installation) • [Usage](#-usage) • [Architecture](#-architecture) • [Providers](#-providers) • [Frontend](#-frontend)
 
 </div>
 
@@ -20,26 +19,27 @@
 
 ## 🎯 What is Houdini Agent?
 
-Houdini Agent is an intelligent automation system for macOS that uses **local AI models** to:
+Houdini Agent is an intelligent desktop automation system that uses **any compatible LLM provider** to:
 
 - 👁️ **See** your screen using computer vision
 - 🧠 **Plan** complex multi-step tasks
 - 🖱️ **Execute** actions (click, type, scroll) like a human
 - 📚 **Learn** from experience and improve over time
 - 💭 **Think** out loud with a real-time reasoning window
+- 🌐 **Chat** with it through a local-first web frontend
 
-Unlike cloud-based solutions, Houdini runs **entirely on your machine** — no data leaves your computer.
+It supports **Bring Your Own Key (BYOK)** for cloud providers, runs entirely on **Ollama** locally, or even runs frontier models in the browser via **WebLLM** — your data stays under your control.
 
 ---
 
 ## ✨ Features
 
 ### 🧠 Multi-Agent Architecture
-| Component | Model | Purpose |
-|-----------|-------|---------|
-| **Planner** | Ollama (Qwen 3 Coder) | Breaks tasks into executable steps |
-| **Executor** | Local Vision + Accessibility | Performs screen actions |
-| **Supervisor** | llama.cpp (Qwen 2.5 7B) | Validates and corrects actions |
+| Component | Role | Default Provider |
+|-----------|------|------------------|
+| **Planner** | Breaks tasks into executable macro steps | Ollama / OpenAI / Gemini / Anthropic |
+| **Executor** | Performs screen actions via accessibility + vision | Local macOS APIs |
+| **Supervisor** | Validates and corrects actions | Local Ollama or cloud model |
 
 ### 🚀 Key Capabilities
 
@@ -48,7 +48,9 @@ Unlike cloud-based solutions, Houdini runs **entirely on your machine** — no d
 - **🧠 Self-Improving** - Learns from failures and adapts prompts automatically
 - **💭 Thinking Window** - Real-time visualization of AI reasoning
 - **📊 Replay & Debug** - Time-travel through execution history
-- **🔒 Privacy-First** - All AI models run locally on your machine
+- **🔌 Provider Abstraction** - Swap LLM providers with one env variable
+- **🌐 Local Web Frontend** - Chat with Houdini from your browser; no cloud required
+- **🔒 Privacy-First** - Choose local-only (Ollama/WebLLM) or BYOK cloud providers
 
 ---
 
@@ -58,8 +60,8 @@ Unlike cloud-based solutions, Houdini runs **entirely on your machine** — no d
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/houdini-agent.git
-cd houdini-agent
+git clone https://github.com/vishal-k-crypto/Houdini.git
+cd Houdini
 
 # Create virtual environment
 python3 -m venv .venv
@@ -69,46 +71,45 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Install Ollama (Required)
+### 2. Choose a Provider
 
+**Option A — Local Ollama (default, private):**
 ```bash
-# macOS
 brew install ollama
-
-# Or download from https://ollama.ai
-```
-
-### 3. Pull Required Models
-
-```bash
-# Pull the planning model (recommended)
 ollama pull qwen2.5-coder:14b
-
-# Or use smaller model for faster inference
-ollama pull qwen2.5-coder:7b
 ```
 
-### 4. Configure Environment
+**Option B — Cloud provider (BYOK):**
+```bash
+export OPENAI_API_KEY=sk-...
+# or ANTHROPIC_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY, OPENROUTER_API_KEY, etc.
+```
+
+**Option C — Browser-based WebLLM:**
+Start the frontend and select a WebLLM model — no installation, no API key.
+
+### 3. Configure Environment
 
 ```bash
-# Copy the example environment file
 cp .env.example .env
+# Edit .env with your preferred provider and model
+```
 
-# Edit .env with your settings (optional)
-# Most features work without any API keys!
+### 4. Verify Setup
+
+```bash
+python -m src.main --health-check
 ```
 
 ### 5. Run Your First Task
 
 ```bash
-# Basic task
+# CLI task
 python -m src.main --task "Open Calculator and calculate 15 * 23"
 
-# With thinking window
-python -m src.main --task "Open Safari and search for Python tutorials" --thinking-window
-
-# Complex multi-step task
-python -m src.main --task "Create a new note in Notes app with today's date and a shopping list"
+# With the web frontend
+python -m src.api.server
+# open http://localhost:8420
 ```
 
 ---
@@ -119,29 +120,28 @@ python -m src.main --task "Create a new note in Notes app with today's date and 
 
 - **macOS 12+** (Monterey or later)
 - **Python 3.10+**
-- **Ollama** installed and running
-- **Accessibility Permissions** (granted on first run)
+- At least one supported provider configured (Ollama, OpenAI, Anthropic, Gemini, etc.)
+- **Accessibility & Screen Recording Permissions** (granted on first run)
 
 ### Full Installation
 
 ```bash
 # 1. Install system dependencies
 brew install tesseract  # For OCR
-brew install ollama     # For local LLMs
+brew install ollama     # Optional: for local LLMs
 
 # 2. Clone and setup
-git clone https://github.com/yourusername/houdini-agent.git
-cd houdini-agent
+git clone https://github.com/vishal-k-crypto/Houdini.git
+cd Houdini
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Install Playwright browsers
+# 3. Install Playwright browsers (for web automation)
 playwright install chromium
 
-# 4. Download YOLO model (for UI detection)
-# This happens automatically on first run, or manually:
-# wget https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt
+# 4. Configure environment
+cp .env.example .env
 
 # 5. Grant permissions
 # First run will prompt for Accessibility and Screen Recording permissions
@@ -152,61 +152,60 @@ playwright install chromium
 For better performance on Apple Silicon:
 
 ```bash
-# Install MLX-VLM for UI-TARS
 pip install mlx-vlm
-
 # Models are auto-downloaded on first use
 # ~4GB for UI-TARS-7B model
+```
+
+### Frontend Setup
+
+```bash
+# Install Node.js dependencies
+npm install --prefix frontend
+
+# Start dev server
+npm run dev --prefix frontend
+
+# Or build for production
+npm run build --prefix frontend
 ```
 
 ---
 
 ## 🎮 Usage
 
-### Basic Usage
+### CLI Usage
 
 ```bash
-# Simple tasks
+# Simple task
 python -m src.main --task "Open System Preferences"
-python -m src.main --task "Take a screenshot"
-python -m src.main --task "Open Terminal and run 'ls -la'"
-```
 
-### Advanced Options
+# Use a specific provider/model
+python -m src.main --task "Open Safari" --model gpt-4o
 
-```bash
-# Enable thinking window (see AI reasoning in real-time)
+# Enable thinking window
 python -m src.main --task "Your task" --thinking-window
 
-# Use specific Ollama model
-python -m src.main --task "Your task" --model qwen2.5-coder:14b
-
-# Training mode (saves execution data for analysis)
+# Training mode
 python -m src.main --task "Your task" --train
 
-# Disable enhanced executor (fallback to basic PyAutoGUI)
+# Disable enhanced executor
 python -m src.main --task "Your task" --no-enhanced
 ```
 
-### Replay & Debug
+### Web Frontend
 
 ```bash
-# List all sessions
-python -m src.main --replay-list
-
-# Replay a specific session
-python -m src.main --replay --replay-session <session_id>
-
-# Generate debug report
-python -m src.main --debug-report
+python -m src.api.server
 ```
 
-### Programmatic Usage
+Open `http://localhost:8420` in your browser. Submit tasks, watch live events, and review execution history.
+
+### Programmatic API
 
 ```python
 from src.main import run_task_internal
 
-# Run task programmatically
 result = run_task_internal(
     task_description="Open Calculator and add 5 + 3",
     is_training=False
@@ -216,93 +215,182 @@ print(f"Success: {result['success']}")
 print(f"Session ID: {result['session_id']}")
 ```
 
+### HTTP API
+
+```bash
+# Submit a task
+curl -X POST http://localhost:8420/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"task": "Open Notes and write a todo list"}'
+
+# Stream events
+curl http://localhost:8420/tasks/{task_id}/stream
+```
+
 ---
 
 ## 🏗️ Architecture
 
+> **Full details:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
 ```
+ User Task
+     │
+     ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                        User Task                            │
+│  📋 Planner (any LLM provider)                             │
+│  └── Task → 3-10 macro steps (cached via pattern store)     │
 └───────────────────────┬─────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  📋 Planner (Ollama Qwen)                                   │
-│  └── Breaks task into macro/micro steps                     │
+│  🎯 Adaptive Coordinator                                    │
+│  ├── Macro step → screen context → micro actions            │
+│  ├── 4-tier vision: Accessibility → TinyClick → YOLO → VLM │
+│  ├── Stuck detection + adaptive re-planning                 │
+│  └── Supervisor verification (≥75% confidence to complete)  │
 └───────────────────────┬─────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  🎯 Adaptive Loop Coordinator                               │
-│  ├── Macro Planning (high-level strategy)                   │
-│  └── Micro Execution (pixel-precise actions)                │
+│  ✅ Supervisor + Evolution                                   │
+│  ├── LLM reviews final screen against success criteria      │
+│  ├── Adds corrective steps if incomplete (max 3 attempts)   │
+│  └── Screenshot-based verification for zero-element screens   │
 └───────────────────────┬─────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  👁️ Vision System                                           │
-│  ├── OmniParser V2 (YOLO + OCR)                            │
-│  ├── TinyClick (fast element detection)                     │
-│  └── Accessibility API (macOS native)                       │
-└───────────────────────┬─────────────────────────────────────┘
-                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│  ✋ Executor                                                │
-│  ├── Blind Actions (keyboard shortcuts)                     │
-│  └── Vision Actions (element interaction)                   │
-└───────────────────────┬─────────────────────────────────────┘
-                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│  ✅ Supervisor (llama.cpp Qwen 2.5 7B)                      │
-│  └── Validates actions and provides feedback                │
+│  📚 Learning System                                         │
+│  ├── Pattern store (cache successful plans)                   │
+│  ├── Prompt evolution (self-improving prompts)                │
+│  ├── Lesson store (failure analysis)                        │
+│  └── Execution confidence (action reliability scoring)        │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 🔌 Providers
+
+Houdini supports a wide range of LLM providers through a unified adapter layer.
+
+### Supported Providers
+
+| Provider | Type | Key / Detection | Notes |
+|----------|------|-----------------|-------|
+| **Ollama** | Local | `OLLAMA_ENDPOINT` (optional) | Default; runs locally |
+| **OpenAI** | Cloud | `OPENAI_API_KEY` | GPT-4o, GPT-4, etc. |
+| **Anthropic** | Cloud | `ANTHROPIC_API_KEY` | Claude 3/3.5 family |
+| **Gemini** | Cloud | `GEMINI_API_KEY` | Google Gemini 2.0 |
+| **DeepSeek** | Cloud | `DEEPSEEK_API_KEY` | OpenAI-compatible |
+| **OpenRouter** | Cloud | `OPENROUTER_API_KEY` | OpenAI-compatible gateway |
+| **Grok (xAI)** | Cloud | `XAI_API_KEY` | OpenAI-compatible |
+| **WebLLM** | Browser | None | Runs models in browser, no install |
+| **Claude Code CLI** | CLI | `claude` in PATH | Anthropic CLI agent |
+| **Codex CLI** | CLI | `codex` in PATH | OpenAI CLI agent |
+| **OpenCode CLI** | CLI | `opencode` in PATH | OpenAI CLI agent |
+| **Kimi CLI** | CLI | `kimi` in PATH | Moonshot CLI agent |
+| **Gemini CLI** | CLI | `gemini` in PATH | Google CLI agent |
+| **agy / Antigravity** | CLI | `agy` in PATH | Terminal agent |
+| **Qwen CLI** | CLI | `qwen` in PATH | Alibaba CLI agent |
+
+> **See [docs/PROVIDERS.md](docs/PROVIDERS.md) for:** adding custom adapters, detection logic, fallback routing, and model aliases.
+
+---
+
+## 🌐 Frontend
+
+Houdini ships with a local-first web frontend built with Vite + React + TypeScript.
+
+### Features
+
+- Chat-style task submission
+- Live WebSocket event stream
+- Task history and replay
+- Provider selector (including WebLLM)
+- Dark mode
+
+### Quick Start
+
+```bash
+npm install --prefix frontend
+npm run dev --prefix frontend
+```
+
+### Serve from the Daemon
+
+```bash
+python -m src.api.server
+# Serves static frontend from frontend/dist when built
+npm run build --prefix frontend
+```
+
+> **See [docs/FRONTEND.md](docs/FRONTEND.md) for:** event schemas, build options, and WebSocket details.
+
+---
+
+## ⚠️ Important Notes
+
+### Browser-Only Frontier AI
+
+Some models (e.g., certain WebLLM variants, Google Gemini web experiments) are only available through a browser. Use the Houdini frontend to leverage them.
+
+### WebLLM Limitations
+
+- Requires a modern browser with WebGPU support (Chrome 113+, Edge, Firefox Nightly).
+- First model load may take 30–120 seconds while weights download/cached.
+- Smaller models (Llama 3.1 8B, Phi-4) are recommended for lower-end machines.
 
 ---
 
 ## 🧩 Project Structure
 
 ```
-houdini-agent/
+Houdini/
 ├── src/
-│   ├── main.py                 # Entry point
-│   ├── planner/                # Task planning agents
-│   ├── agents/                 # Execution agents
-│   ├── supervisor/             # Validation & feedback
+│   ├── main.py                 # Entry point & CLI
+│   ├── health_check.py         # Pre-flight checks (--health-check)
+│   ├── api/                    # FastAPI server + dashboard + auth
+│   ├── providers/              # Unified LLM adapter layer
+│   ├── planner/                # Task → macro step decomposition
+│   ├── agents/                 # Action executors (blind, vision, enhanced)
+│   ├── supervisor/             # Validation, semantic checking
 │   ├── loop/                   # Execution coordinators
 │   ├── ui/                     # Thinking window
-│   ├── utils/                  # Utilities
-│   └── replay/                 # Replay & debug
-├── prompts/                    # System prompts (self-evolving)
-├── examples/                   # Usage examples
-├── data/                       # Runtime data (gitignored)
-├── models/                     # Local models (gitignored)
+│   ├── utils/                  # Vision, learning, accessibility, etc.
+│   └── replay/                 # Time-travel debugging
+├── frontend/                   # Vite + React + TypeScript web UI
+├── config/
+│   └── settings.py             # Centralized configuration (HoudiniSettings)
+├── prompts/                    # LLM system prompts
+├── docs/
+│   ├── ARCHITECTURE.md         # Detailed architecture docs
+│   ├── PROVIDERS.md            # Provider adapter guide
+│   └── FRONTEND.md             # Frontend dev guide
+├── tests/                      # pytest test suite
+├── .github/
+│   ├── workflows/ci.yml          # GitHub Actions CI
+│   └── CONTRIBUTING.md           # Contribution guide
+├── .env.example                # All configurable env vars
 ├── requirements.txt            # Python dependencies
-├── .env.example               # Environment template
-└── README.md                  # This file
+├── frontend/package.json         # Node dependencies
+└── README.md
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-### Environment Variables
+All settings are managed by `config/settings.py`. Values come from (highest priority):
 
-Create a `.env` file from `.env.example`:
+1. **Environment variables** — `COMPLETION_CONFIDENCE_THRESHOLD=0.8`
+2. **`.env` file** — auto-loaded at startup
+3. **Defaults** — defined in code
 
 ```bash
-# Required for cloud planning
-GEMINI_API_KEY=your_key_here  # Optional - local models work without this
-
-# Local model path
-MODEL_PATH=./models/qwen2.5-7b-instruct-q5_k_m.gguf
-
-# Default Ollama model
-OLLAMA_MODEL=qwen2.5-coder:14b
-
-# Logging
-LOG_LEVEL=INFO
-
-# Features
-ENABLE_THINKING_WINDOW=false
+# Copy template and customize
+cp .env.example .env
 ```
+
+See [.env.example](.env.example) for all configurable parameters including provider keys, model names, thresholds, and timeouts.
 
 ### Grant macOS Permissions
 
@@ -375,7 +463,7 @@ pip install -r requirements.txt
 
 ### Getting Help
 
-- Check [issues](https://github.com/yourusername/houdini-agent/issues)
+- Check [issues](https://github.com/vishal-k-crypto/Houdini/issues)
 - Run with debug logging: `LOG_LEVEL=DEBUG python -m src.main --task "..."`
 - Generate debug report: `python -m src.main --debug-report`
 
@@ -383,18 +471,21 @@ pip install -r requirements.txt
 
 ## 🗺️ Roadmap
 
+- [x] Provider abstraction layer (BYOK)
+- [x] Local-first web frontend
+- [x] WebLLM support
 - [ ] Windows & Linux support
 - [ ] Browser extension for web automation
 - [ ] Voice command interface
 - [ ] Multi-monitor support
 - [ ] Custom plugin system
-- [ ] Cloud sync for learned patterns
+- [ ] Cloud sync for learned patterns (opt-in)
 
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please see [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for guidelines.
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
@@ -417,6 +508,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [TinyClick](https://github.com/Samsung/TinyClick) - GUI automation
 - [LangGraph](https://github.com/langchain-ai/langgraph) - Agent orchestration
 - [Agent-S](https://github.com/simular-ai/Agent-S) - Inspiration for architecture
+- [WebLLM](https://webllm.mlc.ai/) - In-browser LLM inference
 
 ---
 
