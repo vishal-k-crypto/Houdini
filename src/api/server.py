@@ -279,10 +279,18 @@ def _run_task_sync(rec: _TaskRecord):
             rec.push_event({"type": "architecture", "value": "legacy"})
         else:
             from ..loop.adaptive_coordinator import AdaptiveLoopCoordinator
+            smart_router = None
+            if getattr(settings, "smart_router_enabled", False):
+                try:
+                    from ..providers.smart_router import smart_router as _sr
+                    smart_router = _sr
+                except Exception:
+                    pass
             coordinator = AdaptiveLoopCoordinator(
                 client=client,
                 enable_thinking_window=False,
                 max_iterations=100,
+                smart_router=smart_router,
             )
             rec.push_event({"type": "architecture", "value": "adaptive"})
 

@@ -27,7 +27,8 @@ from enum import Enum
 from .loop_state import LoopState, LoopStatus, ActionRecord
 from ..utils.logging import logger
 from ..utils.ollama_client import OllamaClient
-from ..providers.base import LLMProvider
+from ..providers.base import LLMProvider, GenerateResult
+from ..providers.smart_router import SmartRouter
 from ..utils.schemas import (
     MacroPlanResponse, MicroActionsResponse, SupervisorGuidance as PydanticSupervisorGuidance,
     VerificationResult as PydanticVerificationResult, MicroAction as PydanticMicroAction,
@@ -282,8 +283,10 @@ class AdaptiveLoopCoordinator:
                  client: Union[OllamaClient, LLMProvider],
                  enable_thinking_window: bool = True,
                  max_iterations: int = None,
-                 screen_capture_interval: float = 0.5):
+                 screen_capture_interval: float = 0.5,
+                 smart_router: Optional[SmartRouter] = None):
         self.client = client
+        self.smart_router = smart_router
         self.enable_thinking_window = enable_thinking_window
         self.max_iterations = max_iterations or _cfg("max_iterations", 100)
         self.screen_capture_interval = screen_capture_interval
@@ -315,6 +318,103 @@ class AdaptiveLoopCoordinator:
 
         # Fast executor for batched/speculative action execution (initialized lazily)
         self._fast_executor: Optional[FastExecutor] = None
+
+    # ── Role-aware LLM helpers ─────────────────────────────────────────
+
+    def _llm(
+        self,
+        role: str,
+        prompt: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        system_prompt: Optional[str] = None,
+        require_vision: bool = False,
+        **kwargs,
+    ) -> GenerateResult:
+        """Generate text using the smart router if available, else the default client."""
+        if self.smart_router is not None:
+            return self.smart_router.generate_for(
+                self.state.task if self.state else prompt,
+                prompt,
+                role=role,
+                require_vision=require_vision,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                **kwargs,
+            )
+        return self.client.generate(
+            prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            **kwargs,
+        )
+
+    def _llm_json(
+        self,
+        role: str,
+        prompt: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        system_prompt: Optional[str] = None,
+        **kwargs,
+    ) -> Dict:
+        """Generate and parse JSON via the smart router or default client."""
+        if self.smart_router is not None:
+            result = self.smart_router.generate_for(
+                self.state.task if self.state else prompt,
+                prompt,
+                role=role,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                **kwargs,
+            )
+        else:
+            result = self.client.generate(
+                prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                **kwargs,
+            )
+        return self.client._extract_json(result.text)
+
+    def _llm_vision(
+        self,
+        role: str,
+        prompt: str,
+        image: Any,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        system_prompt: Optional[str] = None,
+        **kwargs,
+    ) -> GenerateResult:
+        """Generate with an image via the smart router or default client."""
+        if self.smart_router is not None:
+            return self.smart_router.generate_for(
+                self.state.task if self.state else prompt,
+                prompt,
+                role=role,
+                require_vision=True,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                images=[image],
+                **kwargs,
+            )
+        return self.client.generate(
+            prompt,
+            images=[image],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            **kwargs,
+        )
 
     def _fast_exec(self) -> Optional[FastExecutor]:
         """Lazy initialize FastExecutor with this coordinator's vision handler."""
@@ -761,7 +861,7 @@ Generate the macro plan for the task:"""
             # Show that we're waiting for LLM to plan
             self._show("planner", "⏳ Creating hybrid macro plan...", "thinking")
             
-            response = self.client.generate_json(prompt, temperature=0.3)
+            response = self._llm_json("planner", prompt, temperature=0.3)
             
             # Use Pydantic validation for macro plan response
             try:
@@ -1044,7 +1144,7 @@ Generate actions:"""
             self._show("executor", "⏳ Planning actions...", "thinking")
             llm_start = time.time()
             
-            response = self.client.generate_json(prompt, temperature=0.2)
+            response = self._llm_json("executor", prompt, temperature=0.2)
             
             llm_duration = time.time() - llm_start
             logger.debug(f"LLM micro-action generation took {llm_duration:.1f}s")
@@ -1853,7 +1953,7 @@ Output JSON:
 Supervisor decision:"""
 
         try:
-            response = self.client.generate_json(prompt, temperature=0.3)
+            response = self._llm_json("supervisor", prompt, temperature=0.3)
             
             # Use Pydantic validation for supervisor guidance
             try:
@@ -2098,7 +2198,7 @@ Output JSON:
 Verification result:"""
 
         try:
-            response = self.client.generate_json(prompt, temperature=0.2)
+            response = self._llm_json("supervisor", prompt, temperature=0.2)
             
             # Use Pydantic validation for verification result
             try:
@@ -2229,7 +2329,7 @@ Output JSON:
 Evolution plan:"""
 
         try:
-            response = self.client.generate_json(prompt, temperature=0.3)
+            response = self._llm_json("supervisor", prompt, temperature=0.3)
             
             mistakes = response.get("executor_mistakes", "Unknown")
             correction = response.get("correction_message", "")
@@ -2332,12 +2432,13 @@ Evolution plan:"""
                 with open(screenshot_path, "rb") as f:
                     img_data = base64.b64encode(f.read()).decode("utf-8")
                 
-                response = self.client.generate(
-                    prompt="Describe what you see on this screen in 2-3 sentences. Focus on: which app is open, what content is visible, and any notable UI state (dialogs, errors, loading).",
-                    images=[img_data],
-                    temperature=0.1
+                response = self._llm_vision(
+                    "vision",
+                    "Describe what you see on this screen in 2-3 sentences. Focus on: which app is open, what content is visible, and any notable UI state (dialogs, errors, loading).",
+                    img_data,
+                    temperature=0.1,
                 )
-                return response.strip() if response else None
+                return response.text.strip() if response.text else None
             except Exception as vision_err:
                 logger.debug(f"Vision-based screenshot description unavailable: {vision_err}")
                 # Fallback: return basic file info as evidence screenshot was taken
@@ -2644,7 +2745,7 @@ IMPORTANT:
 - If on completely wrong page, include navigation back"""
 
         try:
-            response = self.client.generate_json(prompt, temperature=0.3)
+            response = self._llm_json("planner", prompt, temperature=0.3)
             
             if response and isinstance(response, dict):
                 analysis = response.get("analysis", "")
