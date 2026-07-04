@@ -219,6 +219,22 @@ class HoudiniSettings:
     )
 
     # ================================================================
+    # Smart Router
+    # ================================================================
+    smart_router_enabled: bool = field(
+        default_factory=lambda: _env_bool("HOUDINI_SMART_ROUTER_ENABLED", False)
+    )
+    smart_router_prefer_local: bool = field(
+        default_factory=lambda: _env_bool("HOUDINI_PREFER_LOCAL", False)
+    )
+    smart_router_budget_cap_usd: Optional[float] = field(
+        default_factory=lambda: _env_float("HOUDINI_BUDGET_CAP_USD", 0.0) or None
+    )
+    smart_router_latency_budget_ms: Optional[float] = field(
+        default_factory=lambda: _env_float("HOUDINI_LATENCY_BUDGET_MS", 0.0) or None
+    )
+
+    # ================================================================
     # Infrastructure
     # ================================================================
     redis_url: str = field(

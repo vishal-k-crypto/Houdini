@@ -96,6 +96,10 @@ class SettingsUpdate(BaseModel):
     default_provider: Optional[str] = None
     provider_keys: Optional[Dict[str, str]] = None
     provider_models: Optional[Dict[str, str]] = None
+    smart_router_enabled: Optional[bool] = None
+    smart_router_prefer_local: Optional[bool] = None
+    smart_router_budget_cap_usd: Optional[float] = None
+    smart_router_latency_budget_ms: Optional[float] = None
 
 
 class TaskInfo(BaseModel):
@@ -204,6 +208,25 @@ def _get_task(task_id: str) -> _TaskRecord:
 
 def _get_provider_client(rec: _TaskRecord):
     """Build a provider client from a task record using the new registry/router."""
+    from config.settings import settings
+
+    # If smart routing is enabled and the user did not explicitly pick a provider,
+    # let the SmartRouter choose based on task complexity and constraints.
+    if (
+        getattr(settings, "smart_router_enabled", False)
+        and not rec.provider
+        and not os.environ.get("HOUDINI_DEFAULT_PROVIDER")
+    ):
+        try:
+            from ..providers.smart_router import smart_router
+            decision = smart_router.route(rec.task, "worker")
+            logger.info(
+                f"SmartRouter selected {decision.provider_id}/{decision.model} for task: {decision.reason}"
+            )
+            return registry.create(decision.provider_id, model_name=decision.model or rec.model)
+        except Exception as exc:
+            logger.warning(f"SmartRouter failed: {exc}; falling back to manual selection")
+
     provider_id = rec.provider or os.environ.get("HOUDINI_DEFAULT_PROVIDER") or get_default_provider() or "ollama"
     model_name = rec.model
 
@@ -421,12 +444,19 @@ def get_settings(_user=Depends(require_viewer)):
         "ollama_default_model": getattr(settings, "ollama_default_model", None),
         "gemini_default_model": getattr(settings, "gemini_default_model", None),
         "webllm_enabled": os.environ.get("HOUDINI_WEBLLM_ENABLED", "false").lower() == "true",
+        "smart_router": {
+            "enabled": getattr(settings, "smart_router_enabled", False),
+            "prefer_local": getattr(settings, "smart_router_prefer_local", False),
+            "budget_cap_usd": getattr(settings, "smart_router_budget_cap_usd", None),
+            "latency_budget_ms": getattr(settings, "smart_router_latency_budget_ms", None),
+        },
     }
 
 
 @app.post("/api/settings", tags=["system"])
 def update_settings(body: SettingsUpdate, _user=Depends(require_operator)):
     """Apply non-persistent settings (keys are set in memory for the current process)."""
+    from config.settings import settings as _settings
     if body.default_provider:
         os.environ["HOUDINI_DEFAULT_PROVIDER"] = body.default_provider
     if body.provider_keys:
@@ -435,6 +465,23 @@ def update_settings(body: SettingsUpdate, _user=Depends(require_operator)):
     if body.provider_models:
         for key, value in body.provider_models.items():
             os.environ[f"HOUDINI_{key.upper()}_MODEL"] = value
+    # Note: dataclasses are frozen, so in-memory settings changes are stored in env vars
+    # and reflected via getattr fallbacks above.
+    if body.smart_router_enabled is not None:
+        os.environ["HOUDINI_SMART_ROUTER_ENABLED"] = str(body.smart_router_enabled).lower()
+    if body.smart_router_prefer_local is not None:
+        os.environ["HOUDINI_PREFER_LOCAL"] = str(body.smart_router_prefer_local).lower()
+    if body.smart_router_budget_cap_usd is not None:
+        os.environ["HOUDINI_BUDGET_CAP_USD"] = str(body.smart_router_budget_cap_usd)
+    if body.smart_router_latency_budget_ms is not None:
+        os.environ["HOUDINI_LATENCY_BUDGET_MS"] = str(body.smart_router_latency_budget_ms)
+
+    # Re-sync the global smart router with the latest env vars
+    try:
+        from ..providers.smart_router import configure_from_env as _sync_smart_router
+        _sync_smart_router()
+    except Exception:
+        pass
     return get_settings()
 
 
@@ -675,6 +722,49 @@ def get_benchmark_result_v2(run_id: str):
 def get_benchmark_result_compat(run_id: str):
     """Deprecated: use /api/benchmarks/results/{run_id} instead."""
     return get_benchmark_result_v2(run_id)
+
+
+# ── Smart router endpoints ───────────────────────────────────────────
+
+class RouterDecisionRequest(BaseModel):
+    task: str = Field(..., min_length=1)
+    role: str = Field("worker", description="planner | supervisor | vision | worker")
+    require_vision: bool = False
+    require_tools: bool = False
+    require_local: bool = False
+
+
+@app.post("/api/router/decision", tags=["router"])
+def get_router_decision(body: RouterDecisionRequest, _user=Depends(require_viewer)):
+    """Ask the smart router which provider/model it would select for a task/role."""
+    from ..providers.smart_router import smart_router
+    try:
+        decision = smart_router.route(
+            body.task,
+            body.role,
+            require_vision=body.require_vision,
+            require_tools=body.require_tools,
+            require_local=body.require_local,
+        )
+        return {
+            "role": decision.role,
+            "provider": decision.provider_id,
+            "model": decision.model,
+            "reason": decision.reason,
+            "local": decision.local,
+            "supports_vision": decision.supports_vision,
+            "estimated_cost_usd": decision.estimated_cost_usd,
+            "estimated_latency_ms": decision.estimated_latency_ms,
+        }
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/router/usage", tags=["router"])
+def get_router_usage(_user=Depends(require_viewer)):
+    """Return aggregate usage/cost summary from the smart router."""
+    from ..providers.smart_router import smart_router
+    return smart_router.usage_summary()
 
 
 # ── Task queue / scheduler endpoints ─────────────────────────────────
