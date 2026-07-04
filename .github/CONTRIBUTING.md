@@ -107,3 +107,9 @@ By contributing to this project, you agree that your contributions will be licen
 ---
 
 Thank you for helping make Houdini Agent better!
+
+---
+
+## CI Note
+
+The repository includes a GitHub Actions workflow at `.github/workflows/ci.yml` that runs Python lint/tests and Node.js frontend build/type-check. If you need to modify CI, ensure your OAuth token has `workflow` scope to push workflow changes, or ask a maintainer to apply the change.
