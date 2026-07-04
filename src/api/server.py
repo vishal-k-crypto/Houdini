@@ -367,6 +367,50 @@ def list_providers():
     }
 
 
+@app.get("/api/skills", tags=["system"])
+def list_skills(task: Optional[str] = None):
+    """List available skills, optionally filtered by task relevance."""
+    try:
+        from ..skills import skill_registry
+
+        skills = skill_registry.skills
+        if task:
+            matched = skill_registry.match(task, top_k=10)
+            matched_ids = {s.id for s in matched}
+            return {
+                "skills": [
+                    {
+                        "id": s.id,
+                        "name": s.name,
+                        "description": s.description,
+                        "triggers": s.triggers,
+                        "tags": s.tags,
+                        "priority": s.priority,
+                        "matched": s.id in matched_ids,
+                    }
+                    for s in skills
+                ],
+                "matched": [s.id for s in matched],
+            }
+        return {
+            "skills": [
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "description": s.description,
+                    "triggers": s.triggers,
+                    "tags": s.tags,
+                    "priority": s.priority,
+                    "matched": False,
+                }
+                for s in skills
+            ]
+        }
+    except Exception as exc:
+        logger.warning(f"Skill registry unavailable: {exc}")
+        return {"skills": [], "error": str(exc)}
+
+
 @app.get("/api/settings", tags=["system"])
 def get_settings(_user=Depends(require_viewer)):
     """Return non-sensitive current settings."""

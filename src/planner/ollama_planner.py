@@ -14,6 +14,14 @@ from ..utils.choice_tracker import choice_tracker
 from ..utils.action_optimizer import action_optimizer
 from ..ui.thinking_window import show_planner_thinking, show_thinking
 
+# Import skill registry for reusable task instructions
+try:
+    from ..skills import skill_registry
+    SKILLS_AVAILABLE = True
+except ImportError:
+    skill_registry = None
+    SKILLS_AVAILABLE = False
+
 # Import context memory for resolving ambiguous references
 try:
     from ..utils.context_memory import get_planner_context, resolve_task_context
@@ -201,11 +209,23 @@ class OllamaPlanner:
                     logger.debug(f"📁 Context memory provided hints for task")
             except Exception as e:
                 logger.debug(f"Context memory lookup failed: {e}")
-        
+
+        # NEW: Inject reusable skill instructions for common task families
+        skill_hints = ""
+        if SKILLS_AVAILABLE and skill_registry is not None:
+            try:
+                skill_hints = skill_registry.prompt_for_task(task, top_k=2)
+                if skill_hints:
+                    logger.debug("🛠️ Injected skill hints into planner prompt")
+            except Exception as e:
+                logger.debug(f"Skill hint lookup failed: {e}")
+
         # Load evolved system prompt
         system_prompt = get_planner_prompt()
-        
+
         prompt = f"""{system_prompt}
+
+{skill_hints}
 
 ## Task: {task}
 
