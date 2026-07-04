@@ -111,7 +111,7 @@ class SetOfMarksRenderer:
         return SOMRenderResult(image=annotated.convert("RGB"), marks=marks, id_to_element=id_to_element)
 
     @staticmethod
-    def _load_font(size: int = 12) -> ImageFont.FreeTypeFont:
+    def _load_font(size: int = 12) -> ImageFont.ImageFont:
         """Load a system font for marker labels, falling back to a default bitmap font.
 
         Tries macOS, Linux, and Windows system font paths in order.
@@ -119,7 +119,7 @@ class SetOfMarksRenderer:
         font_paths = [
             "/System/Library/Fonts/Helvetica.ttc",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            os.path.join("C:", "Windows", "Fonts", "arial.ttf"),
+            os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", "arial.ttf"),
         ]
         for path in font_paths:
             try:

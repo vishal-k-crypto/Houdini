@@ -28,8 +28,6 @@ sys.path.insert(0, _PROJECT_ROOT)
 _mock_logger = MagicMock()
 _mock_modules = {
     "pyautogui": MagicMock(),
-    "PIL": MagicMock(),
-    "PIL.Image": MagicMock(),
     "rich": MagicMock(),
     "rich.logging": MagicMock(),
     "rich.console": MagicMock(),
@@ -39,6 +37,14 @@ _mock_modules = {
 for name, stub in _mock_modules.items():
     if name not in sys.modules:
         sys.modules[name] = stub
+
+
+@pytest.fixture(autouse=True)
+def _mock_pil():
+    """Isolate PIL mocking to tests in this file so the real Pillow import
+    remains available to other tests (e.g. test_browser_vision.py)."""
+    with patch.dict(sys.modules, {"PIL": MagicMock(), "PIL.Image": MagicMock()}):
+        yield
 
 # Now import the actual modules through the package system.
 # task_verifier has light deps (logging + coordinate_predictor), so mock those:
