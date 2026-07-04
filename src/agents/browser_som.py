@@ -37,6 +37,13 @@ class SetOfMarksRenderer:
         marker_color: Tuple[int, int, int, int] = (255, 0, 0, 200),
         text_color: Tuple[int, int, int] = (255, 255, 255),
     ):
+        """Initialize the renderer with marker appearance settings.
+
+        Args:
+            marker_radius: Radius of the numbered marker circles.
+            marker_color: RGBA fill color for markers.
+            text_color: RGB color for the marker number text.
+        """
         self.marker_radius = marker_radius
         self.marker_color = marker_color
         self.text_color = text_color
@@ -46,17 +53,76 @@ class SetOfMarksRenderer:
         screenshot: Image.Image,
         elements: List[Dict[str, Any]],
     ) -> SOMRenderResult:
-        """Draw numbered markers and return the annotated image + mappings."""
+        """Draw numbered markers on interactive elements and return the annotated result.
+
+        Args:
+            screenshot: Base screenshot image.
+            elements: List of element dictionaries, each optionally containing a ``bbox``
+                with ``x``, ``y``, ``width``, and ``height``.
+
+        Returns:
+            A ``SOMRenderResult`` with the annotated image, mark metadata, and ID mapping.
+        """
         img = screenshot.convert("RGBA")
         overlay = Image.new("RGBA", img.size, (255, 255, 255, 0))
         draw = ImageDraw.Draw(overlay)
         marks: List[Dict[str, Any]] = []
         id_to_element: Dict[int, Dict[str, Any]] = {}
 
-        try:
-            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
-        except Exception:
-            font = ImageFont.load_default()
+        font = self._load_font()
+
+        for idx, element in enumerate(elements, start=1):
+            bbox = element.get("bbox") or {}
+            x = int(bbox.get("x", 0))
+            y = int(bbox.get("y", 0))
+            width = int(bbox.get("width", 0))
+            height = int(bbox.get("height", 0))
+            if width <= 0 or height <= 0:
+                continue
+
+            center_x = x + width // 2
+            center_y = y + height // 2
+            r = self.marker_radius
+            draw.ellipse(
+                [center_x - r, center_y - r, center_x + r, center_y + r],
+                fill=self.marker_color,
+            )
+            text = str(idx)
+            text_bbox = draw.textbbox((0, 0), text, font=font)
+            tw, th = text_bbox[2] - text_bbox[0], text_bbox[3] - text_bbox[1]
+            draw.text(
+                (center_x - tw / 2, center_y - th / 2),
+                text,
+                font=font,
+                fill=self.text_color,
+            )
+
+            mark = {
+                "som_id": idx,
+                "bbox": bbox,
+                "text": element.get("text", ""),
+                "tag": element.get("tag", ""),
+            }
+            marks.append(mark)
+            id_to_element[idx] = element
+
+        annotated = Image.alpha_composite(img, overlay)
+        return SOMRenderResult(image=annotated.convert("RGB"), marks=marks, id_to_element=id_to_element)
+
+    @staticmethod
+    def _load_font(size: int = 12) -> ImageFont.FreeTypeFont:
+        """Load a system font for marker labels, falling back to a default bitmap font."""
+        font_paths = [
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+        ]
+        for path in font_paths:
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
 
         for idx, element in enumerate(elements, start=1):
             bbox = element.get("bbox") or {}

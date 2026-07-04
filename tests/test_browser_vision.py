@@ -1,5 +1,7 @@
 """Tests for browser vision grounding helpers."""
 
+import base64
+
 from src.agents.browser_observation import BrowserObservation
 
 
@@ -85,3 +87,52 @@ def test_som_renderer_labels_elements():
     assert result.marks[0]["som_id"] == 1
     assert result.marks[1]["som_id"] == 2
     assert result.id_to_element[1]["text"] == "OK"
+
+
+def test_som_renderer_empty_elements():
+    from src.agents.browser_som import SetOfMarksRenderer
+    from PIL import Image
+
+    img = Image.new("RGB", (100, 100), color="white")
+    renderer = SetOfMarksRenderer()
+    result = renderer.render(img, [])
+
+    assert result.marks == []
+    assert isinstance(result.base64_png, str)
+    assert len(result.base64_png) > 0
+
+
+def test_som_renderer_skips_invalid_bbox():
+    from src.agents.browser_som import SetOfMarksRenderer
+    from PIL import Image
+
+    img = Image.new("RGB", (200, 200), color="white")
+    elements = [
+        {"id": "no-bbox", "tag": "button", "text": "No bbox"},
+        {"id": "zero-width", "bbox": {"x": 10, "y": 10, "width": 0, "height": 20}, "tag": "button"},
+        {"id": "negative-height", "bbox": {"x": 10, "y": 10, "width": 30, "height": -5}, "tag": "button"},
+        {"id": "valid", "bbox": {"x": 50, "y": 50, "width": 40, "height": 30}, "tag": "button", "text": "Valid"},
+    ]
+    renderer = SetOfMarksRenderer()
+    result = renderer.render(img, elements)
+
+    assert len(result.marks) == 1
+    assert result.marks[0]["text"] == "Valid"
+    assert result.id_to_element[result.marks[0]["som_id"]]["text"] == "Valid"
+
+
+def test_som_renderer_base64_png():
+    from src.agents.browser_som import SetOfMarksRenderer
+    from PIL import Image
+
+    img = Image.new("RGB", (100, 100), color="white")
+    elements = [
+        {"id": "btn-1", "bbox": {"x": 10, "y": 10, "width": 40, "height": 20}, "tag": "button", "text": "OK"},
+    ]
+    renderer = SetOfMarksRenderer()
+    result = renderer.render(img, elements)
+
+    assert isinstance(result.base64_png, str)
+    assert len(result.base64_png) > 0
+    decoded = base64.b64decode(result.base64_png)
+    assert decoded.startswith(b"\x89PNG\r\n\x1a\n")

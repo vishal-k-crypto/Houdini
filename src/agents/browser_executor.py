@@ -195,19 +195,33 @@ class BrowserSession:
         try:
             elements = self.page.evaluate("""
                 () => {
-                    const tags = ['a', 'button', 'input', 'select', 'textarea'];
+                    const tags = [
+                        'a', 'button', 'input', 'select', 'textarea',
+                        '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="radio"]'
+                    ];
                     const out = [];
                     document.querySelectorAll(tags.join(',')).forEach((el, idx) => {
-                        const rect = el.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0) {
-                            out.push({
-                                id: el.id || `el-${idx}`,
-                                tag: el.tagName.toLowerCase(),
-                                text: (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').slice(0, 100),
-                                type: el.type || null,
-                                bbox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-                            });
+                        const style = getComputedStyle(el);
+                        if (style.visibility === 'hidden' || style.display === 'none') {
+                            return;
                         }
+                        if (style.pointerEvents === 'none' || el.disabled) {
+                            return;
+                        }
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width <= 0 || rect.height <= 0) {
+                            return;
+                        }
+                        if (rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) {
+                            return;
+                        }
+                        out.push({
+                            id: el.id || `el-${idx}`,
+                            tag: el.tagName.toLowerCase(),
+                            text: (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').slice(0, 100),
+                            type: el.type || null,
+                            bbox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+                        });
                     });
                     return out;
                 }
