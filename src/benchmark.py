@@ -55,6 +55,7 @@ BENCHMARK_TASKS: List[BenchmarkTask] = [
         tags=["smoke", "hotkey"],
         expected_app=None,
         timeout_s=15,
+        verify_hint="Spotlight search bar appeared and then disappeared; desktop is back to normal.",
     ),
     BenchmarkTask(
         id="smoke-textedit",
@@ -62,6 +63,7 @@ BENCHMARK_TASKS: List[BenchmarkTask] = [
         tags=["smoke", "type", "app-launch"],
         expected_app="TextEdit",
         timeout_s=30,
+        verify_hint="TextEdit window is closed and no save dialog remains; desktop is clean.",
     ),
     BenchmarkTask(
         id="smoke-safari-url",
@@ -69,6 +71,7 @@ BENCHMARK_TASKS: List[BenchmarkTask] = [
         tags=["smoke", "browser", "navigation"],
         expected_app="Safari",
         timeout_s=40,
+        verify_hint="Safari is frontmost and the address bar shows example.com loaded.",
     ),
 
     # ── App interaction ──
@@ -78,6 +81,7 @@ BENCHMARK_TASKS: List[BenchmarkTask] = [
         tags=["app", "finder", "file-ops"],
         expected_app="Finder",
         timeout_s=60,
+        verify_hint="Finder is active and no folder named 'houdini-benchmark-test' remains on the Desktop.",
     ),
     BenchmarkTask(
         id="app-notes-create",
@@ -85,6 +89,7 @@ BENCHMARK_TASKS: List[BenchmarkTask] = [
         tags=["app", "notes"],
         expected_app="Notes",
         timeout_s=60,
+        verify_hint="Notes app is open and no note titled 'Benchmark test note' remains in the list.",
     ),
 
     # ── Vision-heavy tasks ──
@@ -94,6 +99,7 @@ BENCHMARK_TASKS: List[BenchmarkTask] = [
         tags=["vision", "settings", "navigation"],
         expected_app="System Settings",
         timeout_s=60,
+        verify_hint="System Settings window shows the Wi-Fi settings pane with Wi-Fi options visible.",
     ),
     BenchmarkTask(
         id="vision-safari-search",
@@ -101,6 +107,7 @@ BENCHMARK_TASKS: List[BenchmarkTask] = [
         tags=["vision", "browser", "search"],
         expected_app="Safari",
         timeout_s=60,
+        verify_hint="Safari shows a Google search results page for the query 'Houdini agent benchmark'.",
     ),
 
     # ── Multi-step orchestration ──
@@ -110,6 +117,7 @@ BENCHMARK_TASKS: List[BenchmarkTask] = [
         tags=["multi-step", "clipboard"],
         expected_app="TextEdit",
         timeout_s=90,
+        verify_hint="No TextEdit windows remain open and no save dialogs are present.",
     ),
     BenchmarkTask(
         id="multi-screenshot",
@@ -117,6 +125,7 @@ BENCHMARK_TASKS: List[BenchmarkTask] = [
         tags=["multi-step", "screenshot"],
         expected_app="Preview",
         timeout_s=60,
+        verify_hint="Preview app is frontmost displaying a screenshot image.",
     ),
 
     # ── Edge-case / robustness ──
@@ -126,6 +135,7 @@ BENCHMARK_TASKS: List[BenchmarkTask] = [
         tags=["edge", "negative"],
         expected_app=None,
         timeout_s=20,
+        verify_hint="The agent reports failure or an error dialog appears because the app does not exist.",
     ),
 ]
 
