@@ -136,3 +136,28 @@ def test_som_renderer_base64_png():
     assert len(result.base64_png) > 0
     decoded = base64.b64decode(result.base64_png)
     assert decoded.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+from unittest.mock import MagicMock
+
+def test_vision_plan_uses_som_when_provider_supports_vision():
+    from src.agents.browser_executor import BrowserTaskRunner
+
+    mock_client = MagicMock()
+    mock_client.supports_vision = True
+    mock_client.generate.return_value.text = '[{"action": "click", "som_id": 1}]'
+    mock_client._extract_json.return_value = [{"action": "click", "som_id": 1}]
+
+    runner = BrowserTaskRunner(client=mock_client, headless=True)
+    # Patch observation building to avoid real browser
+    runner._build_observation = lambda session: MagicMock(
+        url="https://example.com",
+        title="Example",
+        screenshot_b64="iVBORw0KGgo=",
+        accessibility_tree={},
+        interactive_elements=[{"id": "btn", "tag": "button", "text": "OK", "bbox": {"x": 0, "y": 0, "width": 10, "height": 10}}],
+        clean_text="Example Domain",
+    )
+
+    plan = runner._plan("Click the OK button")
+    assert plan == [{"action": "click", "som_id": 1}]

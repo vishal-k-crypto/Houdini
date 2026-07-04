@@ -388,23 +388,11 @@ class BrowserTaskRunner:
     def _plan(
         self,
         task: str,
-        url: Optional[str] = None,
-        page_text: Optional[str] = None,
-        accessibility_snapshot: Optional[Dict] = None,
+        observation: Optional["BrowserObservation"] = None,
         action_history: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         client = self._get_client()
-        snapshot_text = ""
-        if accessibility_snapshot:
-            snapshot_text = self._format_accessibility_snapshot(accessibility_snapshot, max_nodes=50)
-        context = (
-            f"Current URL: {url or 'unknown'}\n"
-            f"Page text:\n{page_text or 'N/A'}\n"
-            f"Accessibility tree:\n{snapshot_text or 'N/A'}"
-        )
-        if action_history:
-            context += f"\n\nActions already taken:\n" + "\n".join(f"- {a}" for a in action_history[-10:])
-        context = context[:4000]
+        action_history = action_history or []
 
         # Inject relevant skills as system guidance
         skills_text = ""
@@ -414,7 +402,135 @@ class BrowserTaskRunner:
         except Exception:
             pass
 
-        prompt = f"""You are controlling a headless Chromium browser via Playwright to complete a real-world web task.
+        if observation is not None and getattr(client, "supports_vision", False):
+            return self._plan_with_vision(client, task, observation, action_history, skills_text)
+        return self._plan_text_only(client, task, observation, action_history, skills_text)
+
+    def _plan_text_only(
+        self,
+        client,
+        task: str,
+        observation: Optional["BrowserObservation"],
+        action_history: List[str],
+        skills_text: str,
+    ) -> List[Dict[str, Any]]:
+        snapshot_text = ""
+        if observation and observation.accessibility_tree:
+            snapshot_text = self._format_accessibility_snapshot(observation.accessibility_tree, max_nodes=50)
+        context = (
+            f"Current URL: {observation.url if observation else 'unknown'}\n"
+            f"Page text:\n{(observation.clean_text if observation else 'N/A')[:3000]}\n"
+            f"Accessibility tree:\n{snapshot_text or 'N/A'}"
+        )
+        if action_history:
+            context += f"\n\nActions already taken:\n" + "\n".join(f"- {a}" for a in action_history[-10:])
+        return self._call_planner(client, task, context, skills_text, vision=False)
+
+    def _plan_with_vision(
+        self,
+        client,
+        task: str,
+        observation: "BrowserObservation",
+        action_history: List[str],
+        skills_text: str,
+    ) -> List[Dict[str, Any]]:
+        from .browser_som import SetOfMarksRenderer
+        from PIL import Image
+        import io
+
+        img = Image.open(io.BytesIO(observation.screenshot_bytes))
+        renderer = SetOfMarksRenderer()
+        som = renderer.render(img, observation.interactive_elements)
+
+        som_list = "\n".join(
+            f"[{m['som_id']}] {m['tag']} — {m['text'][:60]}"
+            for m in som.marks
+        )
+        context = (
+            f"Current URL: {observation.url}\n"
+            f"Title: {observation.title}\n"
+            f"Interactive elements (marked on the screenshot):\n{som_list}\n\n"
+            f"Page text:\n{observation.clean_text[:2000]}"
+        )
+        if action_history:
+            context += f"\n\nActions already taken:\n" + "\n".join(f"- {a}" for a in action_history[-10:])
+
+        prompt = self._build_planner_prompt(task, context, skills_text, vision=True)
+        result = client.generate(prompt, images=[som.base64_png], temperature=0.2)
+        text = result.text if hasattr(result, "text") else str(result)
+        try:
+            plan = client._extract_json(text)
+            return self._resolve_som_ids(plan, som.id_to_element)
+        except Exception as exc:
+            logger.warning(f"Browser vision plan JSON extraction failed: {exc}")
+            return []
+
+    def _resolve_som_ids(
+        self,
+        plan: List[Dict[str, Any]],
+        id_to_element: Dict[int, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Convert som_id references into stable Playwright selectors."""
+        resolved = []
+        for step in plan:
+            som_id = step.get("som_id")
+            if som_id is not None and som_id in id_to_element:
+                element = id_to_element[som_id]
+                # Prefer ID selector, then text, then tag/type
+                if element.get("id") and not str(element["id"]).startswith("el-"):
+                    step["selector"] = f"#{element['id']}"
+                elif element.get("text"):
+                    step["selector"] = f"text={element['text']}"
+                elif element.get("type"):
+                    step["selector"] = f"{element['tag']}[type='{element['type']}']"
+                else:
+                    step["selector"] = element["tag"]
+            resolved.append(step)
+        return resolved
+
+    def _build_observation(self, session: BrowserSession) -> "BrowserObservation":
+        from .browser_observation import BrowserObservation
+
+        text_res = session.get_clean_text(max_chars=3000)
+        snapshot_res = session.get_accessibility_snapshot()
+        elements_res = session.get_interactive_elements()
+        screenshot_res = session.screenshot()
+
+        return BrowserObservation(
+            url=session.get_url(),
+            title=session.get_title(),
+            screenshot_b64=screenshot_res.data.get("base64", "") if screenshot_res.success else "",
+            accessibility_tree=snapshot_res.data.get("snapshot") if snapshot_res.success else {},
+            interactive_elements=elements_res.data.get("elements", []) if elements_res.success else [],
+            clean_text=text_res.data.get("text", "") if text_res.success else "",
+        )
+
+    def _build_planner_prompt(
+        self,
+        task: str,
+        context: str,
+        skills_text: str,
+        vision: bool,
+    ) -> str:
+        action_docs = """
+- {"action": "goto", "url": "..."}
+- {"action": "click", "selector": "...", "fallback_selectors": ["..."]}
+- {"action": "click", "som_id": 1}  # vision mode only
+- {"action": "type", "selector": "...", "text": "...", "submit": true/false}
+- {"action": "type", "som_id": 1, "text": "...", "submit": true/false}  # vision mode only
+- {"action": "press", "key": "..."}
+- {"action": "scroll", "direction": "down|up", "amount": 500}
+- {"action": "wait", "selector": "..."} or {"action": "wait", "seconds": 2}
+- {"action": "hover", "selector": "..."}
+- {"action": "select", "selector": "...", "value": "..."} or {"label": "..."}
+- {"action": "get_text", "selector": "..."}
+- {"action": "get_clean_text"}
+- {"action": "screenshot"}
+"""
+        vision_note = """
+The attached screenshot has numbered red markers on interactive elements. Use "som_id" to refer to the element you want to interact with. If an element has no marker, use a stable text or attribute selector.""" if vision else ""
+
+        return f"""You are controlling a headless Chromium browser via Playwright to complete a real-world web task.
 
 {skills_text}
 
@@ -422,20 +538,10 @@ Task: {task}
 
 {context}
 
-Return a JSON array of actions. Prefer stable selectors: exact text matches like `text=Submit`, semantic roles like `[placeholder='Search']`, or IDs. Avoid brittle XPath.
+Return a JSON array of actions.{vision_note}
 
 Available actions:
-- {{"action": "goto", "url": "..."}}
-- {{"action": "click", "selector": "...", "fallback_selectors": ["..."]}}
-- {{"action": "type", "selector": "...", "text": "...", "submit": true/false}}
-- {{"action": "press", "key": "..."}}
-- {{"action": "scroll", "direction": "down|up", "amount": 500}}
-- {{"action": "wait", "selector": "..."}} or {{"action": "wait", "seconds": 2}}
-- {{"action": "hover", "selector": "..."}}
-- {{"action": "select", "selector": "...", "value": "..."}} or {{"label": "..."}}
-- {{"action": "get_text", "selector": "..."}}
-- {{"action": "get_clean_text"}}
-- {{"action": "screenshot"}}
+{action_docs}
 
 Guidelines:
 1. Start by navigating to the right page if no URL is loaded.
@@ -446,6 +552,9 @@ Guidelines:
 6. Do not assume success; verify the result when possible.
 
 Respond with JSON only."""
+
+    def _call_planner(self, client, task: str, context: str, skills_text: str, vision: bool = False) -> List[Dict[str, Any]]:
+        prompt = self._build_planner_prompt(task, context, skills_text, vision)
         result = client.generate(prompt, temperature=0.2)
         text = result.text if hasattr(result, "text") else str(result)
         try:
@@ -557,8 +666,8 @@ Respond with JSON only."""
             return {"success": False, "error": "Not a browser task", "browser": False}
 
         with BrowserSession(headless=self.headless) as session:
-            # Initial plan
-            plan = self._plan(task)
+            observation = self._build_observation(session)
+            plan = self._plan(task, observation=observation)
             if not plan:
                 return {"success": False, "error": "Could not build browser plan"}
 
@@ -573,12 +682,8 @@ Respond with JSON only."""
                 if all(r.success for r in results):
                     break
                 # Replan from current state with richer context
-                url = session.get_url()
-                text_res = session.get_clean_text(max_chars=3000)
-                page_text = text_res.data.get("text", "") if text_res.success else ""
-                snapshot_res = session.get_accessibility_snapshot()
-                snapshot = snapshot_res.data.get("snapshot") if snapshot_res.success else None
-                plan = self._plan(task, url=url, page_text=page_text, accessibility_snapshot=snapshot, action_history=action_history)
+                observation = self._build_observation(session)
+                plan = self._plan(task, observation=observation, action_history=action_history)
                 if not plan:
                     break
 
@@ -587,12 +692,10 @@ Respond with JSON only."""
             page_text = final_text.data.get("text", "") if final_text.success else ""
             success = all(r.success for r in all_results) and bool(all_results)
 
-            # Verification + reflection: even if actions succeeded, ask the LLM
-            # whether the task goal is actually satisfied.
+            # Verification + reflection
             if success:
                 verification = self._verify_completion(task, final_url, page_text, action_history)
                 if not verification.get("complete"):
-                    # Try up to 2 reflection loops to finish missing steps
                     for reflect_loop in range(2):
                         repair_plan = self._reflect(
                             task, final_url, page_text, action_history, verification.get("missing", "")
