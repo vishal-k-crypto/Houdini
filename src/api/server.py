@@ -91,6 +91,8 @@ class TaskSubmission(BaseModel):
 
 
 class SettingsUpdate(BaseModel):
+    model_config = {"extra": "ignore"}
+
     default_provider: Optional[str] = None
     provider_keys: Optional[Dict[str, str]] = None
     provider_models: Optional[Dict[str, str]] = None

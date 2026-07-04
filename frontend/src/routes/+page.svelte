@@ -45,6 +45,7 @@
     error = '';
     try {
       await submitTask(taskInput, {
+        provider: $settings.provider || undefined,
         model: $settings.model || undefined,
         architecture: $settings.architecture,
         use_enhanced: $settings.use_enhanced,
