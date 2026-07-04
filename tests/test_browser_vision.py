@@ -239,3 +239,18 @@ def test_vision_plan_text_only_when_provider_lacks_vision():
     plan = runner._plan("Go to example", observation=obs)
     assert plan == [{"action": "goto", "url": "https://example.com"}]
     assert "images" not in mock_client.generate.call_args.kwargs
+
+
+def test_fixture_server_serves_login_page():
+    from src.benchmarks.browser_fixture_server import BrowserFixtureServer
+
+    server = BrowserFixtureServer(port=0)
+    server.start()
+    try:
+        url = server.url_for("/login")
+        import requests
+        r = requests.get(url, timeout=5)
+        assert r.status_code == 200
+        assert "Login" in r.text
+    finally:
+        server.stop()

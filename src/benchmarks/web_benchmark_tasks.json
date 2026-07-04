@@ -1,0 +1,26 @@
+[
+  {
+    "id": "web-login",
+    "description": "Log in to the fixture site with username 'admin' and password 'houdini123'",
+    "tags": ["browser", "form", "fixture"],
+    "start_path": "/login",
+    "expected_text": "Welcome, admin!",
+    "timeout_s": 45
+  },
+  {
+    "id": "web-todo-add",
+    "description": "Add a todo item 'Buy milk' on the fixture todo list",
+    "tags": ["browser", "form", "fixture"],
+    "start_path": "/todo",
+    "expected_text": "Buy milk",
+    "timeout_s": 45
+  },
+  {
+    "id": "web-search",
+    "description": "Search the fixture search page for 'Houdini agent' and verify results appear",
+    "tags": ["browser", "search", "fixture"],
+    "start_path": "/search",
+    "expected_text": "Houdini Agent",
+    "timeout_s": 45
+  }
+]
