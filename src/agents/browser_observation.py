@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import base64
+import binascii
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 @dataclass
@@ -20,7 +21,10 @@ class BrowserObservation:
 
     @property
     def screenshot_bytes(self) -> bytes:
-        return base64.b64decode(self.screenshot_b64)
+        try:
+            return base64.b64decode(self.screenshot_b64)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("Invalid base64 screenshot data") from exc
 
     def to_text_context(self, max_chars: int = 3000) -> str:
         parts = [
