@@ -50,9 +50,9 @@ class SkillRegistry:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [skill for _, skill in scored[:top_k]]
 
-    def prompt_for_task(self, task: str, top_k: int = 2) -> str:
+    def prompt_for_task(self, task: str, top_k: int = 2, min_score: float = 1.0) -> str:
         """Build a system-prompt fragment containing relevant skills."""
-        matches = self.match(task, top_k=top_k)
+        matches = self.match(task, top_k=top_k, min_score=min_score)
         if not matches:
             return ""
         parts = ["# Reusable Skills for This Task\n"]
