@@ -108,6 +108,45 @@
           Thinking window (native UI)
         </label>
       </div>
+
+      <div class="border-t border-border pt-4 mt-2">
+        <h2 class="text-xs uppercase text-gray-400 mb-3">Smart Router</h2>
+        <div class="space-y-3">
+          <label class="flex items-center gap-2 text-sm">
+            <input type="checkbox" bind:checked={$settings.smart_router_enabled} />
+            Enable smart provider selection
+          </label>
+          <p class="text-[10px] text-gray-500">
+            When enabled, Houdini picks the cheapest/fastest capable model for each task instead of using the fixed provider above.
+          </p>
+
+          <label class="flex items-center gap-2 text-sm">
+            <input type="checkbox" bind:checked={$settings.smart_router_prefer_local} />
+            Prefer local providers
+          </label>
+
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label for="sr-budget" class="block text-[10px] uppercase text-gray-500 mb-1">Budget cap (USD)</label>
+              <input
+                id="sr-budget"
+                bind:value={$settings.smart_router_budget_cap_usd}
+                placeholder="e.g. 5.00"
+                class="w-full bg-[#0d1117] border border-border rounded p-2 text-sm"
+              />
+            </div>
+            <div>
+              <label for="sr-latency" class="block text-[10px] uppercase text-gray-500 mb-1">Latency budget (ms)</label>
+              <input
+                id="sr-latency"
+                bind:value={$settings.smart_router_latency_budget_ms}
+                placeholder="e.g. 2000"
+                class="w-full bg-[#0d1117] border border-border rounded p-2 text-sm"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
     {/if}
 
     {#if error}
