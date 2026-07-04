@@ -128,6 +128,32 @@ BENCHMARK_TASKS: List[BenchmarkTask] = [
         verify_hint="Preview app is frontmost displaying a screenshot image.",
     ),
 
+    # ── Browser-only tasks ──
+    BenchmarkTask(
+        id="browser-example-com",
+        description="Open the browser and navigate to https://example.com",
+        tags=["browser", "navigation"],
+        expected_app=None,
+        timeout_s=30,
+        verify_hint="The browser page shows example.com with the 'Example Domain' heading visible.",
+    ),
+    BenchmarkTask(
+        id="browser-search-houdini",
+        description="Search Google for 'Houdini agent benchmark' and return the first result title",
+        tags=["browser", "search"],
+        expected_app=None,
+        timeout_s=60,
+        verify_hint="The browser shows Google search results for 'Houdini agent benchmark'.",
+    ),
+    BenchmarkTask(
+        id="browser-form-fill",
+        description="Open https://httpbin.org/forms/post and fill in the customer name field with 'Houdini'",
+        tags=["browser", "form"],
+        expected_app=None,
+        timeout_s=45,
+        verify_hint="The form on httpbin.org has the customer name field filled with 'Houdini'.",
+    ),
+
     # ── Edge-case / robustness ──
     BenchmarkTask(
         id="edge-nonexistent-app",

@@ -160,6 +160,14 @@ try:
 except ImportError:
     _settings = None
 
+# Import headless browser executor for web-only tasks
+try:
+    from ..agents.browser_executor import BrowserTaskRunner
+    BROWSER_EXECUTOR_AVAILABLE = True
+except ImportError:
+    BROWSER_EXECUTOR_AVAILABLE = False
+    BrowserTaskRunner = None  # type: ignore
+
 def _cfg(attr: str, fallback):
     """Get config value with fallback if config module unavailable."""
     if _settings is not None:
@@ -499,7 +507,29 @@ class AdaptiveLoopCoordinator:
         # NEW: Analyze task flexibility with probability model
         if PROBABILITY_MODEL_AVAILABLE:
             self._analyze_task_flexibility(task)
-        
+
+        # NEW: Route web-first tasks to the headless browser executor
+        browser_result = self._run_browser_task(task)
+        if browser_result is not None:
+            elapsed = time.time() - start_time
+            self.state.completed_at = datetime.now()
+            self.state.phase = AdaptivePhase.COMPLETED if browser_result.get("success") else AdaptivePhase.FAILED
+            return {
+                "success": browser_result.get("success", False),
+                "elapsed": elapsed,
+                "macro_steps_completed": 1 if browser_result.get("success") else 0,
+                "total_actions": len(browser_result.get("actions", [])),
+                "supervisor_interventions": 0,
+                "evolution_count": 0,
+                "phase": self.state.phase.value,
+                "uncertainty": self.state.uncertainty_score,
+                "flexibility": self.state.task_flexibility,
+                "browser": True,
+                "url": browser_result.get("url"),
+                "page_text": browser_result.get("page_text"),
+                "actions": browser_result.get("actions", []),
+            }
+
         try:
             # PHASE 1: Macro Planning
             self._set_phase(AdaptivePhase.PLANNING)
@@ -752,7 +782,37 @@ class AdaptiveLoopCoordinator:
             return app_info.get('app')
         except:
             return None
-    
+
+    # ========== BROWSER TASK ROUTING ==========
+
+    def _is_browser_task(self, task: str) -> bool:
+        """Detect tasks that should run in a headless browser instead of desktop UI."""
+        if not BROWSER_EXECUTOR_AVAILABLE:
+            return False
+        return BrowserTaskRunner(client=None, headless=True)._is_browser_task(task)
+
+    def _run_browser_task(self, task: str) -> Optional[Dict]:
+        """Route a web-first task to the headless browser executor.
+
+        Returns the browser runner result on success, or None if the task is not
+        browser-oriented (so the normal desktop automation path can take over).
+        """
+        if not self._is_browser_task(task):
+            return None
+
+        logger.info("🌐 Routing task to headless browser executor")
+        self._show("system", "Routing task to headless browser executor", "info")
+
+        try:
+            runner = BrowserTaskRunner(client=self.client, headless=True)
+            result = runner.run(task)
+            if result.get("browser"):
+                return result
+            return None
+        except Exception as exc:
+            logger.warning(f"Browser executor failed, falling back to desktop automation: {exc}")
+            return None
+
     # ========== PLANNER: MACRO LEVEL ==========
     
     def _generate_macro_plan(self, task: str) -> Optional[MacroPlan]:
