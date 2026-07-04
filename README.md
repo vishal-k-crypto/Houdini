@@ -358,6 +358,69 @@ When opening an app, use Cmd+Space → type the app name → Enter.
 
 ---
 
+## 🧭 Smart Router
+
+Houdini's **SmartRouter** dynamically selects the best provider/model for each task instead of using a single fixed model.
+
+### How it works
+
+- Classifies tasks as **simple / medium / hard**.
+- Prefers **local/free** providers for simple actions.
+- Routes **vision** tasks to vision-capable providers.
+- Respects **budget caps** and **latency budgets**.
+- Falls back automatically if a provider fails.
+
+### Configuration
+
+```bash
+export HOUDINI_SMART_ROUTER_ENABLED=true
+export HOUDINI_PREFER_LOCAL=true
+export HOUDINI_BUDGET_CAP_USD=5.0
+export HOUDINI_LATENCY_BUDGET_MS=2000
+```
+
+Or enable it in the frontend under **Settings → Smart Router**.
+
+---
+
+## 📊 Benchmarks
+
+Measure agent accuracy with the built-in benchmark suite.
+
+### CLI
+
+```bash
+# Run all benchmark tasks
+python -m src.benchmark
+
+# Filter by tag
+python -m src.benchmark --tag smoke
+
+# Use a specific provider and enable LLM judge verification
+python -m src.benchmark --provider openai --verify-with-llm
+```
+
+### Web Frontend
+
+Open **Benchmarks** in the frontend to browse tasks, run the suite, and inspect per-task results with tag breakdowns.
+
+### HTTP API
+
+```bash
+# List tasks
+curl http://localhost:8420/api/benchmarks/tasks
+
+# Start a run
+curl -X POST http://localhost:8420/api/benchmarks/run \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"openai","verify_with_llm":true}'
+
+# Poll results
+curl http://localhost:8420/api/benchmarks/results/{run_id}
+```
+
+---
+
 ## ⚠️ Important Notes
 
 ### Browser-Only Frontier AI
