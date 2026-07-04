@@ -235,7 +235,7 @@ class BrowserTaskRunner:
         if self.client is not None:
             return self.client
         from ..providers.router import get_provider
-        return get_provider("executor")
+        return get_provider("worker")
 
     def _is_browser_task(self, task: str) -> bool:
         keywords = [

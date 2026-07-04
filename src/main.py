@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 
 from .utils.logging import logger
+from .providers.registry import registry, get_default_provider
+from .providers.base import LLMProvider
 from .utils.ollama_client import OllamaClient
 from .planner.ollama_planner import OllamaPlanner
 from .supervisor.ollama_supervisor import OllamaSupervisor
@@ -42,6 +44,26 @@ def capture_screen() -> bytes:
     return buf.getvalue()
 
 
+def _create_client(args) -> LLMProvider:
+    """Create a provider client from CLI args using the unified registry."""
+    provider_id = args.provider if getattr(args, "provider", None) else None
+    model_name = args.model if getattr(args, "model", None) else None
+
+    if not provider_id:
+        provider_id = get_default_provider() or "ollama"
+
+    kwargs = {}
+    if provider_id == "ollama" or provider_id.startswith("ollama"):
+        if getattr(args, "cloud_endpoint", None):
+            kwargs["cloud_endpoint"] = args.cloud_endpoint
+
+    try:
+        return registry.create(provider_id, model_name=model_name, **kwargs)
+    except Exception as exc:
+        logger.warning(f"Provider '{provider_id}' failed: {exc}; falling back to Ollama")
+        return OllamaClient(model_name=model_name, cloud_endpoint=kwargs.get("cloud_endpoint"))
+
+
 def run_loop_mode(args):
     """Execute task using the continuous loop system."""
     from .ui.thinking_window import start_thinking_window, stop_thinking_window
@@ -53,8 +75,8 @@ def run_loop_mode(args):
         logger.info("💭 Thinking window started")
     
     try:
-        # Initialize Ollama client
-        client = OllamaClient(model_name=args.model, cloud_endpoint=getattr(args, 'cloud_endpoint', None))
+        # Initialize provider client from registry (BYOK / CLI tools / local models)
+        client = _create_client(args)
         
         # Check if LangGraph mode is requested
         if getattr(args, 'use_langgraph', False):
@@ -126,7 +148,7 @@ def run_loop_mode(args):
 
 def run_batch_mode(args):
     """Execute task using the batch execution system (legacy)."""
-    client = OllamaClient(model_name=args.model, cloud_endpoint=getattr(args, 'cloud_endpoint', None))
+    client = _create_client(args)
     planner = OllamaPlanner(client)
     
     # Generate batched plan
@@ -227,10 +249,12 @@ def run_debug_report_mode(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Houdini Agent - Fast Batch Execution with Ollama Qwen 3 Coder")
+    parser = argparse.ArgumentParser(description="Houdini Agent - Universal desktop & browser automation")
     parser.add_argument("--task", "-t", required=False, help="Task description")
-    parser.add_argument("--model", "-m", default=None, 
-                        help="Ollama model for planning (default: from config or qwen3-coder:480b-cloud)")
+    parser.add_argument("--provider", "-p", default=None,
+                        help="Provider id: ollama, openai, anthropic, gemini, cli:claude, cli:codex, ...")
+    parser.add_argument("--model", "-m", default=None,
+                        help="Model name/alias for the selected provider")
     parser.add_argument("--cloud-endpoint", help="Ollama cloud endpoint URL (e.g., https://cloud.ollama.ai)")
     parser.add_argument("--vision-steps", type=int, default=3, help="Max steps for vision actions")
     
@@ -288,9 +312,22 @@ def main():
     # Health Check
     parser.add_argument("--health-check", dest="health_check", action="store_true", default=False,
                         help="Run health check to verify Ollama, permissions, models, and directories")
-    
+
+    # Provider discovery
+    parser.add_argument("--list-providers", dest="list_providers", action="store_true", default=False,
+                        help="List detected providers and CLI agents, then exit")
+
     args = parser.parse_args()
     
+    # Handle provider discovery
+    if getattr(args, 'list_providers', False):
+        print("Detected providers:")
+        for pid, info in sorted(registry.detect_available().items()):
+            print(f"  {pid:20s} {info}")
+        default = get_default_provider()
+        print(f"\nDefault: {default or 'none'}")
+        sys.exit(0)
+
     # Handle health check mode
     if getattr(args, 'health_check', False):
         from .health_check import run_health_check
@@ -375,10 +412,10 @@ def run_task_internal(task_description: str, is_training: bool = True) -> dict:
         dict: Result with keys: success, error, session_id, duration
     """
     from .loop.adaptive_coordinator import AdaptiveLoopCoordinator
-    from .utils.ollama_client import OllamaClient
-    
+
     try:
-        client = OllamaClient()
+        provider_id = get_default_provider() or "ollama"
+        client = registry.create(provider_id)
         coordinator = AdaptiveLoopCoordinator(
             client=client,
             enable_thinking_window=False,  # No GUI in Docker
