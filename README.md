@@ -298,7 +298,7 @@ Houdini supports a wide range of LLM providers through a unified adapter layer.
 
 ## 🌐 Frontend
 
-Houdini ships with a local-first web frontend built with Vite + React + TypeScript.
+Houdini ships with a local-first web frontend built with Vite + SvelteKit + TypeScript.
 
 ### Features
 
@@ -324,6 +324,37 @@ npm run build --prefix frontend
 ```
 
 > **See [docs/FRONTEND.md](docs/FRONTEND.md) for:** event schemas, build options, and WebSocket details.
+
+---
+
+## 🛠️ Skills
+
+Houdini uses a **skill-as-file** protocol inspired by Open Design. Skills are Markdown files with YAML frontmatter that teach the agent reusable execution patterns for common task families (e.g. opening apps, web search, saving files).
+
+### How it works
+
+- Skills live in `skills/`.
+- The planner injects relevant skill instructions into the prompt based on trigger keywords.
+- You can browse and test skill matching in the frontend at **Skills**.
+
+### Example skill
+
+```markdown
+---
+id: open-app
+name: Open an Application
+triggers:
+  - open
+  - launch
+tags:
+  - macos
+priority: 10
+---
+
+When opening an app, use Cmd+Space → type the app name → Enter.
+```
+
+> **See [docs/SKILLS.md](docs/SKILLS.md) for:** the full skill spec, how to add custom skills, and how matching works.
 
 ---
 
@@ -354,17 +385,20 @@ Houdini/
 │   ├── agents/                 # Action executors (blind, vision, enhanced)
 │   ├── supervisor/             # Validation, semantic checking
 │   ├── loop/                   # Execution coordinators
+│   ├── skills/                 # Skill-as-file loader and registry
 │   ├── ui/                     # Thinking window
 │   ├── utils/                  # Vision, learning, accessibility, etc.
 │   └── replay/                 # Time-travel debugging
-├── frontend/                   # Vite + React + TypeScript web UI
+├── frontend/                   # Vite + SvelteKit + TypeScript web UI
 ├── config/
 │   └── settings.py             # Centralized configuration (HoudiniSettings)
 ├── prompts/                    # LLM system prompts
+├── skills/                     # Reusable task instruction files
 ├── docs/
 │   ├── ARCHITECTURE.md         # Detailed architecture docs
 │   ├── PROVIDERS.md            # Provider adapter guide
-│   └── FRONTEND.md             # Frontend dev guide
+│   ├── FRONTEND.md             # Frontend dev guide
+│   └── SKILLS.md               # Skill protocol guide
 ├── tests/                      # pytest test suite
 ├── .github/
 │   ├── workflows/ci.yml          # GitHub Actions CI
