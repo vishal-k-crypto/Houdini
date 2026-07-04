@@ -2,6 +2,7 @@
 
 import base64
 from typing import Tuple
+from unittest.mock import MagicMock
 
 from src.agents.browser_observation import BrowserObservation
 
@@ -148,8 +149,6 @@ def test_som_renderer_base64_png():
     assert decoded.startswith(b"\x89PNG\r\n\x1a\n")
 
 
-from unittest.mock import MagicMock
-
 def test_vision_plan_uses_som_when_provider_supports_vision():
     from src.agents.browser_executor import BrowserTaskRunner
     from src.agents.browser_observation import BrowserObservation
@@ -173,3 +172,70 @@ def test_vision_plan_uses_som_when_provider_supports_vision():
     plan = runner._plan("Click the OK button", observation=obs)
     assert plan == [{"action": "click", "som_id": 1, "selector": "text=OK"}]
     assert mock_client.generate.call_args.kwargs.get("images")
+
+
+def test_resolve_som_ids_unknown_id_skipped():
+    from src.agents.browser_executor import BrowserTaskRunner
+
+    runner = BrowserTaskRunner(client=None, headless=True)
+    plan = [{"action": "click", "som_id": 99}]
+    id_to_element = {1: {"id": "btn", "tag": "button", "text": "OK"}}
+
+    resolved = runner._resolve_som_ids(plan, id_to_element)
+    assert resolved == []
+
+
+def test_resolve_som_ids_missing_tag():
+    from src.agents.browser_executor import BrowserTaskRunner
+
+    runner = BrowserTaskRunner(client=None, headless=True)
+    plan = [{"action": "click", "som_id": 1}]
+    id_to_element = {1: {"id": "el-1"}}
+
+    resolved = runner._resolve_som_ids(plan, id_to_element)
+    assert resolved == []
+
+
+def test_vision_plan_fallback_on_invalid_screenshot():
+    from src.agents.browser_executor import BrowserTaskRunner
+
+    mock_client = MagicMock()
+    mock_client.supports_vision = True
+    mock_client.generate.return_value.text = '[{"action": "goto", "url": "https://example.com"}]'
+    mock_client._extract_json.return_value = [{"action": "goto", "url": "https://example.com"}]
+
+    runner = BrowserTaskRunner(client=mock_client, headless=True)
+    obs = BrowserObservation(
+        url="https://example.com",
+        title="Example",
+        screenshot_b64="not-valid-base64",
+        accessibility_tree={},
+        interactive_elements=[],
+        clean_text="Example Domain",
+    )
+
+    plan = runner._plan("Go to example", observation=obs)
+    assert plan == [{"action": "goto", "url": "https://example.com"}]
+
+
+def test_vision_plan_text_only_when_provider_lacks_vision():
+    from src.agents.browser_executor import BrowserTaskRunner
+
+    mock_client = MagicMock()
+    mock_client.supports_vision = False
+    mock_client.generate.return_value.text = '[{"action": "goto", "url": "https://example.com"}]'
+    mock_client._extract_json.return_value = [{"action": "goto", "url": "https://example.com"}]
+
+    runner = BrowserTaskRunner(client=mock_client, headless=True)
+    obs = BrowserObservation(
+        url="https://example.com",
+        title="Example",
+        screenshot_b64=_make_png_b64(),
+        accessibility_tree={},
+        interactive_elements=[],
+        clean_text="Example Domain",
+    )
+
+    plan = runner._plan("Go to example", observation=obs)
+    assert plan == [{"action": "goto", "url": "https://example.com"}]
+    assert "images" not in mock_client.generate.call_args.kwargs

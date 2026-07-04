@@ -438,7 +438,11 @@ class BrowserTaskRunner:
         from PIL import Image
         import io
 
-        img = Image.open(io.BytesIO(observation.screenshot_bytes))
+        try:
+            img = Image.open(io.BytesIO(observation.screenshot_bytes))
+        except Exception as exc:
+            logger.warning(f"Browser vision screenshot unreadable, falling back to text plan: {exc}")
+            return self._plan_text_only(client, task, observation, action_history, skills_text)
         renderer = SetOfMarksRenderer()
         som = renderer.render(img, observation.interactive_elements)
 
@@ -465,6 +469,21 @@ class BrowserTaskRunner:
             logger.warning(f"Browser vision plan JSON extraction failed: {exc}")
             return []
 
+    def _element_to_selector(self, element: Dict[str, Any]) -> Optional[str]:
+        """Build a stable Playwright selector from an element descriptor."""
+        element_id = element.get("id")
+        if element_id and not str(element_id).startswith("el-"):
+            return f"#{element_id}"
+        if element.get("text"):
+            return f"text={element['text']}"
+        tag = element.get("tag")
+        element_type = element.get("type")
+        if tag and element_type:
+            return f"{tag}[type='{element_type}']"
+        if tag:
+            return tag
+        return None
+
     def _resolve_som_ids(
         self,
         plan: List[Dict[str, Any]],
@@ -473,18 +492,18 @@ class BrowserTaskRunner:
         """Convert som_id references into stable Playwright selectors."""
         resolved = []
         for step in plan:
+            step = dict(step)
             som_id = step.get("som_id")
-            if som_id is not None and som_id in id_to_element:
+            if som_id is not None:
+                if som_id not in id_to_element:
+                    logger.warning(f"Unknown som_id {som_id}; skipping step {step}")
+                    continue
                 element = id_to_element[som_id]
-                # Prefer ID selector, then text, then tag/type
-                if element.get("id") and not str(element["id"]).startswith("el-"):
-                    step["selector"] = f"#{element['id']}"
-                elif element.get("text"):
-                    step["selector"] = f"text={element['text']}"
-                elif element.get("type"):
-                    step["selector"] = f"{element['tag']}[type='{element['type']}']"
-                else:
-                    step["selector"] = element["tag"]
+                selector = self._element_to_selector(element)
+                if selector is None:
+                    logger.warning(f"Could not build selector for som_id {som_id}; skipping step {step}")
+                    continue
+                step["selector"] = selector
             resolved.append(step)
         return resolved
 
