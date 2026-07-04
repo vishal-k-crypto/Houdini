@@ -135,7 +135,7 @@ class OpenAICompatibleProvider(LLMProvider):
         messages.append({"role": "user", "content": prompt})
         return messages
 
-    def generate(
+    def _generate_text(
         self,
         prompt: str,
         *,

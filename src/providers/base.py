@@ -96,7 +96,7 @@ class LLMProvider(ABC):
         return False
 
     @abstractmethod
-    def generate(
+    def _generate_text(
         self,
         prompt: str,
         *,
@@ -106,8 +106,44 @@ class LLMProvider(ABC):
         stop: Optional[List[str]] = None,
         **kwargs,
     ) -> GenerateResult:
-        """Generate a text completion for the given prompt."""
+        """Generate a text-only completion. Subclasses must implement this."""
         ...
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        stop: Optional[List[str]] = None,
+        images: Optional[List[Union[str, bytes]]] = None,
+        **kwargs,
+    ) -> GenerateResult:
+        """Generate a completion for the given prompt.
+
+        If ``images`` is provided and the provider supports vision, this routes
+        to :meth:`generate_with_image`. Otherwise it delegates to
+        :meth:`_generate_text`. Subclasses should implement ``_generate_text``
+        and ``generate_with_image`` (when vision is supported) instead of
+        overriding this method.
+        """
+        if images:
+            if not self.supports_vision:
+                raise NotImplementedError(
+                    f"Provider {self.provider_id} does not support vision inputs."
+                )
+            return self.generate_with_image(
+                prompt, images[0], system_prompt=system_prompt, **kwargs
+            )
+        return self._generate_text(
+            prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            **kwargs,
+        )
 
     def generate_with_image(
         self,

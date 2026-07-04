@@ -158,7 +158,7 @@ class CLIAgentProvider(LLMProvider):
             "agents": available,
         }
 
-    def generate(
+    def _generate_text(
         self,
         prompt: str,
         *,

@@ -27,6 +27,7 @@ from enum import Enum
 from .loop_state import LoopState, LoopStatus, ActionRecord
 from ..utils.logging import logger
 from ..utils.ollama_client import OllamaClient
+from ..providers.base import LLMProvider
 from ..utils.schemas import (
     MacroPlanResponse, MicroActionsResponse, SupervisorGuidance as PydanticSupervisorGuidance,
     VerificationResult as PydanticVerificationResult, MicroAction as PydanticMicroAction,
@@ -278,7 +279,7 @@ class AdaptiveLoopCoordinator:
     _terminal_display: Optional[Any] = None
 
     def __init__(self,
-                 client: OllamaClient,
+                 client: Union[OllamaClient, LLMProvider],
                  enable_thinking_window: bool = True,
                  max_iterations: int = None,
                  screen_capture_interval: float = 0.5):

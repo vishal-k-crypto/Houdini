@@ -89,7 +89,7 @@ class OllamaProvider(LLMProvider):
         resp = urllib.request.urlopen(url, timeout=timeout)
         return json.loads(resp.read().decode())
 
-    def generate(
+    def _generate_text(
         self,
         prompt: str,
         *,

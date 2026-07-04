@@ -98,7 +98,7 @@ class GeminiProvider(LLMProvider):
         else:
             self._client = genai.Client()  # uses ADC / env
 
-    def generate(
+    def _generate_text(
         self,
         prompt: str,
         *,

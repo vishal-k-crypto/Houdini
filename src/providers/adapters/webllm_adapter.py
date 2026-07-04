@@ -37,7 +37,7 @@ class WebLLMProvider(LLMProvider):
         # WebLLM is always available in the sense that the frontend can use it.
         return {"available": False, "frontend_only": True, "local": True}
 
-    def generate(
+    def _generate_text(
         self,
         prompt: str,
         *,

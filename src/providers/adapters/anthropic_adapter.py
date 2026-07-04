@@ -72,7 +72,7 @@ class AnthropicProvider(LLMProvider):
             client_kwargs["base_url"] = self.base_url
         self._client = anthropic.Anthropic(**client_kwargs)
 
-    def generate(
+    def _generate_text(
         self,
         prompt: str,
         *,

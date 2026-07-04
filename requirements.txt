@@ -17,6 +17,12 @@ python-dotenv>=1.0.0
 # Google Gemini API (for cloud planning)
 google-genai>=0.2.0
 
+# OpenAI API (GPT-4o, o3, Codex CLI compatible endpoint)
+openai>=1.30.0
+
+# Anthropic API (Claude family)
+anthropic>=0.25.0
+
 # Local LLM inference (for supervisor)
 llama-cpp-python>=0.2.90
 
