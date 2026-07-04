@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
 
@@ -111,11 +112,14 @@ class SetOfMarksRenderer:
 
     @staticmethod
     def _load_font(size: int = 12) -> ImageFont.FreeTypeFont:
-        """Load a system font for marker labels, falling back to a default bitmap font."""
+        """Load a system font for marker labels, falling back to a default bitmap font.
+
+        Tries macOS, Linux, and Windows system font paths in order.
+        """
         font_paths = [
             "/System/Library/Fonts/Helvetica.ttc",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "C:/Windows/Fonts/arial.ttf",
+            os.path.join("C:", "Windows", "Fonts", "arial.ttf"),
         ]
         for path in font_paths:
             try:
@@ -123,41 +127,3 @@ class SetOfMarksRenderer:
             except OSError:
                 continue
         return ImageFont.load_default()
-
-        for idx, element in enumerate(elements, start=1):
-            bbox = element.get("bbox") or {}
-            x = int(bbox.get("x", 0))
-            y = int(bbox.get("y", 0))
-            width = int(bbox.get("width", 0))
-            height = int(bbox.get("height", 0))
-            if width <= 0 or height <= 0:
-                continue
-
-            center_x = x + width // 2
-            center_y = y + height // 2
-            r = self.marker_radius
-            draw.ellipse(
-                [center_x - r, center_y - r, center_x + r, center_y + r],
-                fill=self.marker_color,
-            )
-            text = str(idx)
-            bbox_text = draw.textbbox((0, 0), text, font=font)
-            tw, th = bbox_text[2] - bbox_text[0], bbox_text[3] - bbox_text[1]
-            draw.text(
-                (center_x - tw / 2, center_y - th / 2),
-                text,
-                font=font,
-                fill=self.text_color,
-            )
-
-            mark = {
-                "som_id": idx,
-                "bbox": bbox,
-                "text": element.get("text", ""),
-                "tag": element.get("tag", ""),
-            }
-            marks.append(mark)
-            id_to_element[idx] = element
-
-        annotated = Image.alpha_composite(img, overlay)
-        return SOMRenderResult(image=annotated.convert("RGB"), marks=marks, id_to_element=id_to_element)
