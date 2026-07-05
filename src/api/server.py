@@ -463,7 +463,155 @@ def list_skills(task: Optional[str] = None):
         return {"skills": [], "error": str(exc)}
 
 
+class OllamaPullRequest(BaseModel):
+    model: str
+
+
+class ConnectionTestRequest(BaseModel):
+    provider: str
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    api_base: Optional[str] = None
+
+
+def _persist_env_var(key: str, value: str) -> None:
+    """Save an environment variable update to the local .env file."""
+    from config.settings import PROJECT_ROOT
+    env_path = PROJECT_ROOT / ".env"
+    lines = []
+    exists = False
+
+    if env_path.exists():
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            pass
+
+    # Find if the key already exists and update it
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k, _ = stripped.split("=", 1)
+            if k.strip() == key:
+                lines[i] = f"{key}={value}\n"
+                exists = True
+                break
+
+    if not exists:
+        # Append new key-value pair to the end
+        lines.append(f"{key}={value}\n")
+
+    try:
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except Exception as exc:
+        logger.warning(f"Could not persist setting {key} to .env: {exc}")
+
+
+def _set_and_persist_env_var(key: str, value: str) -> None:
+    os.environ[key] = value
+    _persist_env_var(key, value)
+
+
+@app.get("/api/providers/detect", tags=["system"])
+def detect_providers(_user=Depends(require_viewer)):
+    """Deep-scan for all available providers and CLI agents on the host system."""
+    available = registry.detect_deep()
+    providers_list = []
+    for pid in registry.list_providers():
+        info = available.get(pid, {})
+        is_available = pid in available
+        providers_list.append({
+            "id": pid,
+            "available": is_available,
+            "models": info.get("models", []),
+            "source": info.get("source", ""),
+            "agents": info.get("agents", {}),
+            "details": info,
+        })
+    return {
+        "providers": providers_list,
+        "default": get_default_provider()
+    }
+
+
+@app.post("/api/settings/test-connection", tags=["system"])
+def test_provider_connection(body: ConnectionTestRequest, _user=Depends(require_operator)):
+    """Test connectivity to a provider with specified credentials."""
+    import shutil
+    pid = body.provider.lower()
+
+    actual_pid = pid
+    if pid in ("openrouter", "deepseek", "grok"):
+        actual_pid = "openai"
+
+    try:
+        kwargs = {}
+        if body.api_key:
+            kwargs["api_key"] = body.api_key
+        if body.api_base:
+            if actual_pid == "ollama":
+                kwargs["cloud_endpoint"] = body.api_base
+            else:
+                kwargs["base_url"] = body.api_base
+
+        if pid == "cli":
+            from ..providers.cli_adapter import _CLI_AGENTS
+            agent = body.model or "claude"
+            spec = _CLI_AGENTS.get(agent)
+            if not spec:
+                return {"success": False, "error": f"Unknown CLI agent '{agent}'"}
+            available = shutil.which(spec.command) is not None
+            if available:
+                return {"success": True, "message": f"CLI agent '{agent}' is available on PATH"}
+            else:
+                return {"success": False, "error": f"CLI agent binary '{spec.command}' not found on system PATH"}
+
+        if pid == "webllm":
+            return {"success": True, "message": "WebLLM runs in the browser. WebGPU detection is done on the client side."}
+
+        model_name = body.model
+        provider = registry.create(actual_pid, model_name=model_name, **kwargs)
+
+        res = provider.generate("Respond with exactly the word: SUCCESS", max_tokens=10)
+        text = res.text.strip().lower()
+        if text:
+            return {"success": True, "message": f"Connection verified. Response: {res.text.strip()}"}
+
+        return {"success": False, "error": "No response returned from the model."}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def _pull_ollama_model_bg(model: str):
+    import urllib.request
+    import json
+    try:
+        url = f"{(os.environ.get('OLLAMA_ENDPOINT') or 'http://localhost:11434').rstrip('/')}/api/pull"
+        data = json.dumps({"name": model, "stream": False}).encode()
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            resp.read()
+            logger.info(f"Ollama pulled model {model} successfully")
+    except Exception as exc:
+        logger.warning(f"Failed to pull Ollama model {model}: {exc}")
+
+
+@app.post("/api/providers/pull", tags=["system"])
+def pull_ollama_model(body: OllamaPullRequest, background_tasks: BackgroundTasks, _user=Depends(require_operator)):
+    """Pull a model on the local Ollama instance in the background."""
+    background_tasks.add_task(_pull_ollama_model_bg, body.model)
+    return {"status": "pulling", "model": body.model}
+
+
 @app.get("/api/settings", tags=["system"])
+
 def get_settings(_user=Depends(require_viewer)):
     """Return non-sensitive current settings."""
     from config.settings import settings
@@ -485,43 +633,43 @@ def get_settings(_user=Depends(require_viewer)):
 
 @app.post("/api/settings", tags=["system"])
 def update_settings(body: SettingsUpdate, _user=Depends(require_operator)):
-    """Apply non-persistent settings (keys are set in memory for the current process)."""
+    """Apply non-persistent and persistent settings."""
     from config.settings import settings as _settings
     # Normalize provider from either flat or structured format
     default_provider = body.default_provider or body.provider
     if default_provider:
-        os.environ["HOUDINI_DEFAULT_PROVIDER"] = default_provider
+        _set_and_persist_env_var("HOUDINI_DEFAULT_PROVIDER", default_provider)
     if body.model and default_provider:
-        os.environ[f"HOUDINI_{default_provider.upper().replace(':', '_')}_MODEL"] = body.model
+        _set_and_persist_env_var(f"HOUDINI_{default_provider.upper().replace(':', '_')}_MODEL", body.model)
     if body.api_key and default_provider:
         # Derive env key for known providers
         env_key = _provider_env_key(default_provider)
         if env_key:
-            os.environ[env_key] = body.api_key
+            _set_and_persist_env_var(env_key, body.api_key)
     if body.api_base and default_provider:
         if default_provider in ("ollama", "openai"):
-            os.environ[f"HOUDINI_{default_provider.upper()}_BASE_URL"] = body.api_base
+            _set_and_persist_env_var(f"HOUDINI_{default_provider.upper()}_BASE_URL", body.api_base)
     if body.provider_keys:
         for key, value in body.provider_keys.items():
-            os.environ[key.upper()] = value
+            _set_and_persist_env_var(key.upper(), value)
     if body.provider_models:
         for key, value in body.provider_models.items():
-            os.environ[f"HOUDINI_{key.upper().replace(':', '_')}_MODEL"] = value
+            _set_and_persist_env_var(f"HOUDINI_{key.upper().replace(':', '_')}_MODEL", value)
     if body.provider_base_urls:
         for key, value in body.provider_base_urls.items():
-            os.environ[f"HOUDINI_{key.upper().replace(':', '_')}_BASE_URL"] = value
+            _set_and_persist_env_var(f"HOUDINI_{key.upper().replace(':', '_')}_BASE_URL", value)
     # Note: dataclasses are frozen, so in-memory settings changes are stored in env vars
     # and reflected via getattr fallbacks above.
     if body.smart_router_enabled is not None:
-        os.environ["HOUDINI_SMART_ROUTER_ENABLED"] = str(body.smart_router_enabled).lower()
+        _set_and_persist_env_var("HOUDINI_SMART_ROUTER_ENABLED", str(body.smart_router_enabled).lower())
     if body.smart_router_prefer_local is not None:
-        os.environ["HOUDINI_PREFER_LOCAL"] = str(body.smart_router_prefer_local).lower()
+        _set_and_persist_env_var("HOUDINI_PREFER_LOCAL", str(body.smart_router_prefer_local).lower())
     if body.smart_router_budget_cap_usd is not None:
-        os.environ["HOUDINI_BUDGET_CAP_USD"] = str(body.smart_router_budget_cap_usd)
+        _set_and_persist_env_var("HOUDINI_BUDGET_CAP_USD", str(body.smart_router_budget_cap_usd))
     if body.smart_router_latency_budget_ms is not None:
-        os.environ["HOUDINI_LATENCY_BUDGET_MS"] = str(body.smart_router_latency_budget_ms)
+        _set_and_persist_env_var("HOUDINI_LATENCY_BUDGET_MS", str(body.smart_router_latency_budget_ms))
     if body.use_browser_vision is not None:
-        os.environ["HOUDINI_USE_BROWSER_VISION"] = str(body.use_browser_vision).lower()
+        _set_and_persist_env_var("HOUDINI_USE_BROWSER_VISION", str(body.use_browser_vision).lower())
 
     # Re-sync the global smart router with the latest env vars
     try:
@@ -530,6 +678,7 @@ def update_settings(body: SettingsUpdate, _user=Depends(require_operator)):
     except Exception:
         pass
     return get_settings()
+
 
 
 @app.post("/api/tasks", response_model=TaskInfo, status_code=202, tags=["tasks"])

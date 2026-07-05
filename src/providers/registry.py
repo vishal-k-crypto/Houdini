@@ -97,6 +97,40 @@ class ProviderRegistry:
         return available
 
     @classmethod
+    def detect_deep(cls) -> Dict[str, Dict[str, Any]]:
+        """Deep scan: env vars, PATH, Ollama tags, and CLI agents."""
+        available = cls.detect_available()
+
+        # Enrich with CLI agents
+        try:
+            from .cli_adapter import list_available_cli_agents_info
+            cli_agents = list_available_cli_agents_info()
+            if cli_agents:
+                available["cli"] = {
+                    "available": True,
+                    "source": "PATH",
+                    "agents": cli_agents,
+                }
+        except Exception:
+            pass
+
+        # Try to list Ollama models dynamically
+        if "ollama" in available:
+            try:
+                import json
+                import urllib.request
+                url = f"{(os.environ.get('OLLAMA_ENDPOINT') or 'http://localhost:11434').rstrip('/')}/api/tags"
+                with urllib.request.urlopen(url, timeout=2) as resp:
+                    data = resp.read().decode()
+                    models = json.loads(data).get("models", [])
+                    available["ollama"]["models"] = [m.get("name") for m in models]
+            except Exception:
+                pass
+
+        return available
+
+
+    @classmethod
     def auto_load(cls, package: str = "src.providers.adapters") -> None:
         """Dynamically import adapter modules in a package and register them.
 

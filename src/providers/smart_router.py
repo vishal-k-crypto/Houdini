@@ -147,6 +147,39 @@ class SmartRouter(ProviderRouter):
         complexity = self.classifier(task)
         preferred = self.preferences.get(role)
 
+        if not preferred and role == "worker":
+            task_lower = task.lower()
+            coding_keywords = {
+                "code", "coding", "python", "javascript", "script", "program",
+                "function", "implement", "refactor", "debug", "test",
+                "compile", "run", "git", "cli", "shell", "bash"
+            }
+            # Match whole words to avoid sub-string false positives (e.g. 'cli' inside 'click')
+            task_words = set(re.findall(r'\b\w+\b', task_lower))
+            is_coding = (
+                complexity in ("medium", "hard") or 
+                "write a" in task_lower or 
+                any(kw in task_words for kw in coding_keywords)
+            )
+            if is_coding:
+                try:
+                    from .cli_adapter import list_available_cli_agents
+                    cli_agents = list_available_cli_agents()
+                    if cli_agents:
+                        first_agent = cli_agents[0]
+                        return RoutingDecision(
+                            role=role,
+                            provider_id=f"cli:{first_agent}",
+                            model=None,
+                            reason=f"CLI agent '{first_agent}' selected for coding/reasoning task",
+                            estimated_cost_usd=0.0,
+                            estimated_latency_ms=3000.0,
+                            local=True,
+                            supports_vision=False,
+                        )
+                except Exception:
+                    pass
+
         candidates = []
         if preferred:
             candidates.append(preferred)

@@ -222,7 +222,7 @@ class HoudiniSettings:
     # Smart Router
     # ================================================================
     smart_router_enabled: bool = field(
-        default_factory=lambda: _env_bool("HOUDINI_SMART_ROUTER_ENABLED", False)
+        default_factory=lambda: _env_bool("HOUDINI_SMART_ROUTER_ENABLED", True)
     )
     smart_router_prefer_local: bool = field(
         default_factory=lambda: _env_bool("HOUDINI_PREFER_LOCAL", False)

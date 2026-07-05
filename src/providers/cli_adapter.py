@@ -263,5 +263,20 @@ def list_available_cli_agents() -> List[str]:
     ]
 
 
+def list_available_cli_agents_info() -> Dict[str, Dict[str, Any]]:
+    """Return dict of detected CLI agents with metadata."""
+    available = {}
+    for name, spec in _CLI_AGENTS.items():
+        if shutil.which(spec.command):
+            available[name] = {
+                "available": True,
+                "command": spec.command,
+                "description": spec.description,
+                "supports_vision": spec.supports_vision,
+                "supports_tool_calls": spec.supports_tool_calls,
+            }
+    return available
+
+
 __provider_id__ = "cli"
 __provider_class__ = CLIAgentProvider

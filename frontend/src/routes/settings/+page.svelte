@@ -2,11 +2,16 @@
   import { onMount } from 'svelte';
   import { settings, fetchProviders, saveSettings, fetchSettings } from '$lib/store';
   import type { ProviderInfo } from '$lib/store';
+  import { testProvider } from '$lib/onboarding';
 
   let providers: ProviderInfo[] = [];
   let saved = false;
   let loading = true;
   let error = '';
+
+  let testing = false;
+  let testResultText = '';
+  let testSuccess = false;
 
   onMount(async () => {
     try {
@@ -30,6 +35,21 @@
       saved = true;
     } catch (e: any) {
       error = e.message || String(e);
+    }
+  }
+
+  async function runConnectionTest() {
+    testing = true;
+    testResultText = '';
+    try {
+      const res = await testProvider($settings.provider, $settings.model, $settings.api_key, $settings.api_base);
+      testSuccess = res.success;
+      testResultText = res.success ? `✓ Connected: ${res.message || 'Success'}` : `✗ Failed: ${res.error || 'Connection failure'}`;
+    } catch (e: any) {
+      testSuccess = false;
+      testResultText = `✗ Failed: ${e.message || String(e)}`;
+    } finally {
+      testing = false;
     }
   }
 </script>
@@ -161,13 +181,32 @@
       <p class="text-red-400 text-xs">{error}</p>
     {/if}
 
-    <div class="flex items-center gap-3">
-      <button on:click={handleSave} class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm font-semibold">
-        Save Settings
-      </button>
-      {#if saved}
-        <span class="text-green-400 text-sm">Saved</span>
-      {/if}
+    <div class="flex items-center justify-between border-t border-border pt-4 mt-4">
+      <div class="flex items-center gap-3">
+        <button on:click={handleSave} class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm font-semibold">
+          Save Settings
+        </button>
+        <button
+          on:click={runConnectionTest}
+          disabled={testing}
+          class="px-4 py-2 border border-border hover:bg-[#161b22] disabled:opacity-50 rounded text-sm font-semibold"
+        >
+          {testing ? 'Testing...' : 'Test Connection'}
+        </button>
+        {#if saved}
+          <span class="text-green-400 text-sm">Saved</span>
+        {/if}
+        {#if testResultText}
+          <span class="text-xs font-semibold font-mono {testSuccess ? 'text-green-400' : 'text-red-400'}">{testResultText}</span>
+        {/if}
+      </div>
+
+      <a
+        href="/setup"
+        class="px-4 py-2 bg-gradient-to-r from-blue-900 to-indigo-900 border border-blue-700 hover:from-blue-800 hover:to-indigo-800 text-white rounded text-sm font-semibold transition-all shadow-md"
+      >
+        Launch Setup Wizard
+      </a>
     </div>
   </div>
 </div>
