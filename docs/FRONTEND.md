@@ -1,6 +1,6 @@
 # Houdini Agent — Frontend Developer Guide
 
-Houdini ships with a local-first web frontend built with **Vite + React + TypeScript**. It can connect to the Houdini daemon, submit tasks, stream live events, and optionally run frontier models in the browser via **WebLLM**.
+Houdini ships with a local-first web frontend built with **SvelteKit 5 + TypeScript**. It uses `@sveltejs/adapter-static` for production builds, connects to the Houdini daemon, submits tasks, streams live events, and optionally runs frontier models in the browser via **WebLLM**.
 
 ---
 
@@ -8,18 +8,30 @@ Houdini ships with a local-first web frontend built with **Vite + React + TypeSc
 
 ```
 frontend/
-├── public/                 # Static assets
 ├── src/
-│   ├── main.tsx            # App entry
-│   ├── App.tsx             # Root layout
-│   ├── components/         # UI components
-│   ├── hooks/              # React hooks (WebSocket, etc.)
-│   ├── providers/          # WebLLM integration
-│   └── types/              # TypeScript types
-├── index.html
-├── package.json
+│   ├── app.html            # HTML shell
+│   ├── app.css             # Global styles
+│   ├── app.d.ts            # SvelteKit type declarations
+│   ├── lib/
+│   │   ├── store.ts        # Svelte stores (tasks, settings, events, WebSocket)
+│   │   ├── types.ts        # Shared TypeScript types
+│   │   └── webllm.ts       # WebLLM browser inference integration
+│   └── routes/
+│       ├── +layout.svelte  # Root layout (sidebar, nav)
+│       ├── +page.svelte    # Home / task dashboard
+│       ├── settings/
+│       │   └── +page.svelte    # Provider & settings configuration
+│       ├── benchmarks/
+│       │   └── +page.svelte    # Benchmark runner UI
+│       ├── sessions/
+│       │   └── +page.svelte    # Session history
+│       └── skills/
+│           └── +page.svelte    # Skill browser
+├── svelte.config.js
+├── vite.config.ts
 ├── tsconfig.json
-└── vite.config.ts
+├── postcss.config.js
+└── package.json
 ```
 
 ---
@@ -43,7 +55,7 @@ npm install --prefix frontend
 npm run dev --prefix frontend
 ```
 
-By default, the dev server runs on `http://localhost:5173`. The frontend proxies API calls to `http://localhost:8420` if configured in `vite.config.ts`.
+By default, the dev server runs on `http://localhost:5173`. The frontend proxies API calls to `http://localhost:8420` via the Vite config.
 
 ### With the Daemon
 
@@ -67,7 +79,7 @@ Open `http://localhost:5173` and submit a task. The frontend will communicate wi
 npm run build --prefix frontend
 ```
 
-This produces a `frontend/dist` directory with static HTML, CSS, and JS assets.
+This produces a `frontend/dist` directory with static HTML, CSS, and JS assets (via `@sveltejs/adapter-static`).
 
 ### Serve from the Daemon
 
@@ -81,7 +93,7 @@ npm run build --prefix frontend
 python -m src.api.server
 ```
 
-Then open `http://localhost:8420`. The API remains available under `/`, `/health`, `/tasks`, etc.
+Then open `http://localhost:8420`. The API remains available under `/api/*`, `/ws`, etc.
 
 > **Note:** If the frontend build is missing, the daemon still serves the HTTP API and dashboard endpoints.
 
@@ -89,17 +101,26 @@ Then open `http://localhost:8420`. The API remains available under `/`, `/health
 
 ## WebSocket Event Schema
 
-The frontend connects to the daemon via WebSocket (typically at `ws://localhost:8420/ws`) to receive live task events.
+The frontend connects to the daemon via WebSocket (typically at `ws://localhost:8420/ws`) to receive live task events. The connection is managed by the `connectWebSocket()` function in `src/lib/store.ts`.
 
 ### Connection
 
-```javascript
-const ws = new WebSocket("ws://localhost:8420/ws");
+```typescript
+// In src/lib/store.ts
+import { appendEvent, appendScreenshot, appendTerminal } from '$lib/store';
 
-ws.onmessage = (event) => {
-  const message = JSON.parse(event.data);
-  console.log(message.type, message);
-};
+export function connectWebSocket() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+  ws.onmessage = (msg) => {
+    const event = JSON.parse(msg.data);
+    appendEvent(event);
+    // Route to specific handlers based on event.type
+  };
+
+  return ws;
+}
 ```
 
 ### Incoming Messages (Server → Client)
@@ -113,6 +134,7 @@ ws.onmessage = (event) => {
 | `failed` | `{ task_id, error }` | Task failed |
 | `error` | `{ task_id, error }` | Runtime error during execution |
 | `confidence` | `{ task_id, score, label, source }` | Confidence score update |
+| `screenshot` | `{ task_id, image_base64, timestamp }` | Browser/desktop screenshot |
 | `ping` | `{ ts }` | Keep-alive ping |
 
 Example:
@@ -140,6 +162,26 @@ The daemon also exposes a dashboard WebSocket at `/ws/dashboard` used by the bui
 
 ---
 
+## Svelte Stores
+
+The frontend state is managed via Svelte writable/derived stores in `src/lib/store.ts`:
+
+| Store | Type | Description |
+|-------|------|-------------|
+| `tasks` | `Writable<Task[]>` | All submitted tasks |
+| `health` | `Writable<Health \| null>` | Backend health status |
+| `settings` | `Writable<Settings>` | Persisted user settings (localStorage) |
+| `wsConnected` | `Writable<boolean>` | WebSocket connection state |
+| `terminal` | `Writable<TerminalEntry[]>` | Terminal log entries |
+| `screenshots` | `Writable<ScreenshotEvent[]>` | Recent screenshots |
+| `events` | `Writable<SessionEvent[]>` | Raw session events |
+| `selectedTaskId` | `Writable<string \| null>` | Currently selected task |
+| `selectedTask` | `Readable<Task \| null>` | Derived: current task details |
+
+Settings are automatically persisted to `localStorage` under the key `houdini.settings`.
+
+---
+
 ## WebLLM Integration
 
 WebLLM allows running models directly in the browser without any backend API key.
@@ -155,6 +197,7 @@ Recommended WebLLM models:
 ### Loading a Model
 
 ```typescript
+// In src/lib/webllm.ts
 import * as webllm from "@mlc-ai/web-llm";
 
 const engine = new webllm.MLCEngine();
@@ -183,6 +226,26 @@ const reply = await engine.chat.completions.create({
 
 ---
 
+## Browser Vision (Set-of-Marks)
+
+The browser agent supports **vision-based grounding** using Set-of-Marks (SoM). When enabled:
+
+1. The agent takes a screenshot of the current page.
+2. Interactive elements are detected and numbered with red markers.
+3. The annotated screenshot is sent to a vision-capable LLM.
+4. The LLM refers to elements by their SoM ID (e.g., "click element [3]").
+5. SoM IDs are resolved back to stable Playwright selectors.
+
+### Enabling Browser Vision
+
+- **Settings UI:** Toggle "Use browser vision (screenshot + Set-of-Marks)" in `/settings`.
+- **API:** POST `/api/settings` with `{"use_browser_vision": true}`.
+- **Environment:** Set `HOUDINI_USE_BROWSER_VISION=true`.
+
+> **Note:** Browser vision requires a provider that supports image inputs (e.g., GPT-4o, Gemini, Claude). If the active provider lacks vision, the agent falls back to text-only planning using the accessibility tree.
+
+---
+
 ## Environment Variables
 
 Frontend build-time variables are defined in `.env` files under `frontend/`:
@@ -199,13 +262,10 @@ Create `frontend/.env.local` to override these for development.
 ## Type-Checking and Linting
 
 ```bash
-# Type check
-npm run type-check --prefix frontend
+# Type check (SvelteKit + svelte-check)
+npm run check --prefix frontend
 
-# Lint
-npm run lint --prefix frontend
-
-# Build
+# Build (production)
 npm run build --prefix frontend
 ```
 
@@ -248,4 +308,5 @@ Make sure `frontend/dist` exists and the daemon is configured to mount static fi
 - Serve: `python -m src.api.server` (after building)
 - WebSocket events stream live task updates.
 - WebLLM runs in the browser without an API key.
+- Browser vision (SoM) enables visual element grounding for web tasks.
 - See [PROVIDERS.md](PROVIDERS.md) for the Python provider layer and [README.md](../README.md) for high-level usage.
